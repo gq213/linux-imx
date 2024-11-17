@@ -2263,9 +2263,9 @@ static int dw_hdmi_setup(struct dw_hdmi *hdmi,
 	hdmi->vic = drm_match_cea_mode(mode);
 
 	if (!hdmi->vic) {
-		dev_dbg(hdmi->dev, "Non-CEA mode used in HDMI\n");
+		dev_info(hdmi->dev, "Non-CEA mode used in HDMI\n");
 	} else {
-		dev_dbg(hdmi->dev, "CEA mode used vic=%d\n", hdmi->vic);
+		dev_info(hdmi->dev, "CEA mode used vic=%d\n", hdmi->vic);
 	}
 
 	if ((hdmi->vic == 6) || (hdmi->vic == 7) ||
@@ -2315,7 +2315,7 @@ static int dw_hdmi_setup(struct dw_hdmi *hdmi,
 	dw_hdmi_enable_video_path(hdmi);
 
 	if (hdmi->sink_has_audio) {
-		dev_dbg(hdmi->dev, "sink has audio support\n");
+		dev_info(hdmi->dev, "sink has audio support\n");
 
 		/* HDMI Initialization Step E - Configure audio */
 		hdmi_clk_regenerator_update_pixel_clock(hdmi);
@@ -2324,14 +2324,14 @@ static int dw_hdmi_setup(struct dw_hdmi *hdmi,
 
 	/* not for DVI mode */
 	if (hdmi->sink_is_hdmi) {
-		dev_dbg(hdmi->dev, "%s HDMI mode\n", __func__);
+		dev_info(hdmi->dev, "%s HDMI mode\n", __func__);
 
 		/* HDMI Initialization Step F - Configure AVI InfoFrame */
 		hdmi_config_AVI(hdmi, connector, mode);
 		hdmi_config_vendor_specific_infoframe(hdmi, connector, mode);
 		hdmi_config_drm_infoframe(hdmi, connector);
 	} else {
-		dev_dbg(hdmi->dev, "%s DVI mode\n", __func__);
+		dev_info(hdmi->dev, "%s DVI mode\n", __func__);
 	}
 
 	hdmi_video_packetize(hdmi);
@@ -2466,7 +2466,7 @@ static enum drm_connector_status dw_hdmi_detect(struct dw_hdmi *hdmi)
 
 	mutex_lock(&hdmi->mutex);
 	if (result != hdmi->last_connector_result) {
-		dev_dbg(hdmi->dev, "read_hpd result: %d", result);
+		dev_info(hdmi->dev, "read_hpd result: %d", result);
 		handle_plugged_change(hdmi,
 				      result == connector_status_connected);
 		hdmi->last_connector_result = result;
@@ -2486,11 +2486,11 @@ static struct edid *dw_hdmi_get_edid(struct dw_hdmi *hdmi,
 
 	edid = drm_get_edid(connector, hdmi->ddc);
 	if (!edid) {
-		dev_dbg(hdmi->dev, "failed to get edid\n");
+		dev_err(hdmi->dev, "failed to get edid\n");
 		return NULL;
 	}
 
-	dev_dbg(hdmi->dev, "got edid: width[%d] x height[%d]\n",
+	dev_info(hdmi->dev, "got edid: width[%d] x height[%d]\n",
 		edid->width_cm, edid->height_cm);
 
 	hdmi->sink_is_hdmi = drm_detect_hdmi_monitor(edid);
@@ -3152,7 +3152,7 @@ static irqreturn_t dw_hdmi_irq(int irq, void *dev_id)
 	}
 
 	if (status != connector_status_unknown) {
-		dev_dbg(hdmi->dev, "EVENT=%s\n",
+		dev_info(hdmi->dev, "EVENT=%s\n",
 			status == connector_status_connected ?
 			"plugin" : "plugout");
 

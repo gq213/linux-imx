@@ -737,4 +737,9 @@ config DRM_PANEL_WKS_101WX001
 	  Say Y here if you want to enable support for the WKS
 	  101WX001 controller for 1280x800 LCD panel
 
+config DRM_PANEL_LONTIUM_LT8912B
+	tristate "Lontium LT8912B DSI/HDMI panel"
+	help
+	  Say Y here if you want to enable support for Lontium LT8912B DSI to HDMI panel.
+
 endmenu

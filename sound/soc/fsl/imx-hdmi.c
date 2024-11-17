@@ -285,7 +285,17 @@ static struct platform_driver imx_hdmi_driver = {
 	},
 	.probe = imx_hdmi_probe,
 };
-module_platform_driver(imx_hdmi_driver);
+// module_platform_driver(imx_hdmi_driver);
+static int __init imx_hdmi_driver_init(void)
+{
+	return platform_driver_register(&imx_hdmi_driver);
+}
+late_initcall(imx_hdmi_driver_init);
+static void __exit imx_hdmi_driver_exit(void)
+{
+	platform_driver_unregister(&imx_hdmi_driver);
+}
+module_exit(imx_hdmi_driver_exit);
 
 MODULE_AUTHOR("Freescale Semiconductor, Inc.");
 MODULE_DESCRIPTION("Freescale i.MX hdmi audio ASoC machine driver");

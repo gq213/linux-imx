@@ -135,6 +135,9 @@ static void __dwc3_set_mode(struct work_struct *work)
 	spin_lock_irqsave(&dwc->lock, flags);
 	desired_dr_role = dwc->desired_dr_role;
 	spin_unlock_irqrestore(&dwc->lock, flags);
+    
+    dev_info(dwc->dev, "%s: current_dr_role=%d, desired_dr_role=%d\n", __func__, 
+        dwc->current_dr_role, desired_dr_role);
 
 	pm_runtime_get_sync(dwc->dev);
 
@@ -248,6 +251,8 @@ out:
 void dwc3_set_mode(struct dwc3 *dwc, u32 mode)
 {
 	unsigned long flags;
+    
+    dev_info(dwc->dev, "%s: mode=%d\n", __func__, mode);
 
 	if (dwc->dr_mode != USB_DR_MODE_OTG)
 		return;
@@ -1422,6 +1427,8 @@ static int dwc3_core_init_mode(struct dwc3 *dwc)
 	struct dwc3_platform_data *dwc3_pdata;
 	struct device *dev = dwc->dev;
 	int ret;
+    
+    dev_info(dev, "%s: dr_mode=%d\n", __func__, dwc->dr_mode);
 
 	switch (dwc->dr_mode) {
 	case USB_DR_MODE_PERIPHERAL:

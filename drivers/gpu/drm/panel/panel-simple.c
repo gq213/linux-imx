@@ -4688,6 +4688,38 @@ static const struct panel_desc_dsi osd101t2045_53ts = {
 	.lanes = 4,
 };
 
+static const struct drm_display_mode lt8912b_hdmi_mode = {
+	.clock		= 148500,
+	.hdisplay	= 1920,
+	.hsync_start	= 1920 + 88,
+	.hsync_end	= 1920 + 88 + 44,
+	.htotal 	= 1920 + 88 + 44 + 148,
+	.vdisplay	= 1080,
+	.vsync_start	= 1080 + 4,
+	.vsync_end	= 1080 + 4 + 5,
+	.vtotal 	= 1080 + 4 + 5 + 36,
+	.width_mm	= 94,
+	.height_mm	= 151,
+	.flags		= DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+};
+
+static const struct panel_desc_dsi lt8912b_hdmi = {
+	.desc = {
+		.modes = &lt8912b_hdmi_mode,
+		.num_modes = 1,
+		.bpc = 8,
+		.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
+		.size = {
+			.width = 94,
+			.height = 151,
+		},
+	},
+	.flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
+				MIPI_DSI_MODE_VIDEO_HSE,
+	.format = MIPI_DSI_FMT_RGB888,
+	.lanes = 4,
+};
+
 static const struct of_device_id dsi_of_match[] = {
 	{
 		.compatible = "auo,b080uan01",
@@ -4710,6 +4742,9 @@ static const struct of_device_id dsi_of_match[] = {
 	}, {
 		.compatible = "osddisplays,osd101t2045-53ts",
 		.data = &osd101t2045_53ts
+	}, {
+		.compatible = "lontium,lt8912b-hdmi",
+		.data = &lt8912b_hdmi
 	}, {
 		/* sentinel */
 	}

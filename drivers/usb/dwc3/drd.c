@@ -420,6 +420,7 @@ static void dwc3_drd_update(struct dwc3 *dwc)
 		id = extcon_get_state(dwc->edev, EXTCON_USB_HOST);
 		if (id < 0)
 			id = 0;
+		dev_info(dwc->dev, "%s: id=%d\n", __func__, id);
 		dwc3_set_mode(dwc, id ?
 			      DWC3_GCTL_PRTCAP_HOST :
 			      DWC3_GCTL_PRTCAP_DEVICE);
@@ -431,6 +432,7 @@ static int dwc3_drd_notifier(struct notifier_block *nb,
 {
 	struct dwc3 *dwc = container_of(nb, struct dwc3, edev_nb);
 
+    dev_info(dwc->dev, "%s: event=%lu\n", __func__, event);
 	dwc3_set_mode(dwc, event ?
 		      DWC3_GCTL_PRTCAP_HOST :
 		      DWC3_GCTL_PRTCAP_DEVICE);
@@ -462,6 +464,7 @@ static int dwc3_usb_role_switch_set(struct usb_role_switch *sw,
 			mode = DWC3_GCTL_PRTCAP_DEVICE;
 		break;
 	}
+	dev_info(dwc->dev, "%s: mode=%d\n", __func__, mode);
 
 	dwc3_set_mode(dwc, mode);
 	return 0;
@@ -494,6 +497,7 @@ static enum usb_role dwc3_usb_role_switch_get(struct usb_role_switch *sw)
 		break;
 	}
 	spin_unlock_irqrestore(&dwc->lock, flags);
+	dev_info(dwc->dev, "%s: role=%d\n", __func__, role);
 	return role;
 }
 
@@ -503,6 +507,7 @@ static int dwc3_setup_role_switch(struct dwc3 *dwc)
 	u32 mode;
 
 	dwc->role_switch_default_mode = usb_get_role_switch_default_mode(dwc->dev);
+	dev_info(dwc->dev, "%s: role_switch_default_mode=%d\n", __func__, dwc->role_switch_default_mode);
 	switch (dwc->role_switch_default_mode) {
 	case USB_DR_MODE_HOST:
 		mode = DWC3_GCTL_PRTCAP_HOST;
@@ -534,6 +539,7 @@ static int dwc3_setup_role_switch(struct dwc3 *dwc)
 			return ret;
 		}
 	}
+	dev_info(dwc->dev, "%s: mode=%d\n", __func__, mode);
 
 	dwc3_set_mode(dwc, mode);
 	return 0;
