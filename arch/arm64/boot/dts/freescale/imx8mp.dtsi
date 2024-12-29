@@ -165,6 +165,54 @@
 		compatible = "operating-points-v2";
 		opp-shared;
 
+		/* opp-100000000 {
+			opp-hz = /bits/ 64 <100000000>;
+			opp-microvolt = <850000>;
+			opp-supported-hw = <0x8a0>, <0x7>;
+			clock-latency-ns = <150000>;
+			opp-suspend;
+		}; */
+
+		/* opp-200000000 {
+			opp-hz = /bits/ 64 <200000000>;
+			opp-microvolt = <850000>;
+			opp-supported-hw = <0x8a0>, <0x7>;
+			clock-latency-ns = <150000>;
+			opp-suspend;
+		}; */
+
+		opp-400000000 {
+			opp-hz = /bits/ 64 <400000000>;
+			opp-microvolt = <850000>;
+			opp-supported-hw = <0x8a0>, <0x7>;
+			clock-latency-ns = <150000>;
+			opp-suspend;
+		};
+
+		opp-600000000 {
+			opp-hz = /bits/ 64 <600000000>;
+			opp-microvolt = <850000>;
+			opp-supported-hw = <0x8a0>, <0x7>;
+			clock-latency-ns = <150000>;
+			opp-suspend;
+		};
+
+		opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+			opp-microvolt = <850000>;
+			opp-supported-hw = <0x8a0>, <0x7>;
+			clock-latency-ns = <150000>;
+			opp-suspend;
+		};
+
+		opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			opp-microvolt = <850000>;
+			opp-supported-hw = <0x8a0>, <0x7>;
+			clock-latency-ns = <150000>;
+			opp-suspend;
+		};
+
 		opp-1200000000 {
 			opp-hz = /bits/ 64 <1200000000>;
 			opp-microvolt = <850000>;
