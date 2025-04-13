@@ -86,13 +86,13 @@ static void wusb3801_hw_update(struct wusb3801 *wusb3801)
 	dev_info(dev, "usb_id = %d\n", usb_id);
 
 	if ((status & WUSB3801_STAT_ORIENTATION) == WUSB3801_STAT_ORIENTATION_CC2) {
-		if (!wusb3801->sel_val) {
+		if (wusb3801->sel_val != 1) {
 			wusb3801->sel_val = 1;
 			gpiod_set_value_cansleep(wusb3801->sel_gpiod, 1);
 			dev_info(dev, "sel on\n");
 		}
 	} else {
-		if (wusb3801->sel_val) {
+		if (wusb3801->sel_val != 0) {
 			wusb3801->sel_val = 0;
 			gpiod_set_value_cansleep(wusb3801->sel_gpiod, 0);
 			dev_info(dev, "sel off\n");
@@ -100,7 +100,7 @@ static void wusb3801_hw_update(struct wusb3801 *wusb3801)
 	}
 
 	if ((status & WUSB3801_STAT_PARTNER) == WUSB3801_STAT_PARTNER_SNK) {
-		if (!wusb3801->vbus_val) {
+		if (wusb3801->vbus_val != 1) {
 			wusb3801->vbus_val = 1;
 			if (wusb3801->role_sw)
 				usb_role_switch_set_role(wusb3801->role_sw, USB_ROLE_HOST);
@@ -110,7 +110,7 @@ static void wusb3801_hw_update(struct wusb3801 *wusb3801)
 			dev_info(dev, "vbus on\n");
 		}
 	} else {
-		if (wusb3801->vbus_val) {
+		if (wusb3801->vbus_val != 0) {
 			wusb3801->vbus_val = 0;
 			if (wusb3801->role_sw)
 				usb_role_switch_set_role(wusb3801->role_sw, USB_ROLE_DEVICE);
@@ -197,11 +197,13 @@ static int wusb3801_probe(struct i2c_client *client)
 		return dev_err_probe(dev, PTR_ERR(wusb3801->vbus_gpiod),
 					"failed to get vbus-gpios\n");
 	}
+	wusb3801->vbus_val = -1;
 	wusb3801->sel_gpiod = devm_gpiod_get(dev, "sel", GPIOD_OUT_LOW);
 	if (IS_ERR(wusb3801->sel_gpiod)) {
 		return dev_err_probe(dev, PTR_ERR(wusb3801->sel_gpiod),
 					"failed to get sel-gpios\n");
 	}
+	wusb3801->sel_val = -1;
 
 	wusb3801->role_sw = usb_role_switch_get(dev);
 	if (IS_ERR(wusb3801->role_sw)) {
