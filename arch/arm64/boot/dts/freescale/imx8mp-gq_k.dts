@@ -9,6 +9,10 @@
 	model = "NXP i.MX8MPlus gq_k board";
 	compatible = "fsl,imx8mp-gq", "fsl,imx8mp";
 
+	chosen {
+		stdout-path = &uart1;
+	};
+
 	gpio-leds {
 		status {
 			/delete-property/ default-state;
