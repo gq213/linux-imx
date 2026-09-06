@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause) */
-/* Copyright 2017-2019 NXP */
+/* Copyright 2017-2019, 2025 NXP */
 
 #include <linux/timer.h>
 #include <linux/pci.h>
@@ -8,14 +8,18 @@
 #include <linux/dma-mapping.h>
 #include <linux/skbuff.h>
 #include <linux/ethtool.h>
+#include <linux/fsl/ntmp.h>
 #include <linux/if_vlan.h>
 #include <linux/phylink.h>
 #include <linux/dim.h>
-#ifdef CONFIG_ENETC_TSN
+#include <net/pkt_sched.h>
+#include <net/xdp.h>
 #include <net/tsn.h>
-#endif
+#include <net/xdp_sock_drv.h>
 
 #include "enetc_hw.h"
+#include "enetc4_hw.h"
+#include "enetc_mailbox.h"
 
 #define ENETC_MAC_MAXFRM_SIZE	9600
 #define ENETC_MAX_MTU		(ENETC_MAC_MAXFRM_SIZE - \
@@ -23,17 +27,75 @@
 
 #define ENETC_CBD_DATA_MEM_ALIGN 64
 
+#define ENETC_MADDR_HASH_TBL_SZ	64
+#define ENETC_VLAN_HT_SIZE	64
+#define ENETC_INT_NAME_MAX	(IFNAMSIZ + 8)
+
+#define ENETC_XSK_ETF_ENTRY_COUNT	(256U)
+
+struct enetc_xsk_etf_entry {
+	struct enetc_xsk_etf_sched *etf;
+	struct hrtimer timer;
+	u64 addr;
+	ktime_t tx_time;
+	dma_addr_t dma_addr;
+	struct enetc_xsk_etf_entry *next;
+	u32 data_len;
+	u32 retry;
+};
+
+struct enetc_xsk_etf_sched {
+	struct enetc_ndev_priv *priv;
+	s32 delta_ns;
+	int clockid;
+	int queue_id;
+	int cpu;
+	struct enetc_bdr *tx_ring;
+	ktime_t (*get_time)(void);
+
+	struct enetc_xsk_etf_entry *free_list;
+	struct enetc_xsk_etf_entry entries[ENETC_XSK_ETF_ENTRY_COUNT];
+
+	/* protects dropped_list: hrtimer callback push, NAPI pop */
+	spinlock_t dropped_list_lock;
+	struct enetc_xsk_etf_entry *dropped_list;
+
+	s32 hrtimer_delay_min;
+	s32 hrtimer_delay_max;
+	s64 hrtimer_delay_sum;
+	u64 hrtimer_count;
+	u32 hrtimer_dropped;
+
+	u32 xsk_dropped;
+	s32 xsk_delay_min;
+	s32 xsk_delay_max;
+	s64 xsk_delay_sum;
+	u64 xsk_count;
+};
+
+enum enetc_mac_addr_type {UC, MC, MADDR_TYPE};
+
+struct enetc_mac_filter {
+	union {
+		char mac_addr[ETH_ALEN];
+		DECLARE_BITMAP(mac_hash_table, ENETC_MADDR_HASH_TBL_SZ);
+	};
+	int mac_addr_cnt;
+};
+
 struct enetc_tx_swbd {
 	union {
 		struct sk_buff *skb;
 		struct xdp_frame *xdp_frame;
 		struct xdp_buff *xsk_buff;
+		struct enetc_xsk_etf_entry *etf_entry;
 	};
 	dma_addr_t dma;
 	struct page *page;	/* valid only if is_xdp_tx */
 	u16 page_offset;	/* valid only if is_xdp_tx */
 	u16 len;
 	enum dma_data_direction dir;
+	struct xsk_tx_metadata_compl xsk_meta;
 	u8 is_dma_page:1;
 	u8 check_wb:1;
 	u8 do_twostep_tstamp:1;
@@ -42,57 +104,106 @@ struct enetc_tx_swbd {
 	u8 is_xdp_redirect:1;
 	u8 is_xsk:1;
 	u8 qbv_en:1;
+	u8 is_etf:1;
 };
 
+struct enetc_skb_cb {
+	u8 flag;
+	bool udp;
+	u16 correction_off;
+	u16 origin_tstamp_off;
+};
+
+#define ENETC_SKB_CB(skb) ((struct enetc_skb_cb *)((skb)->cb))
+
+struct enetc_lso_t {
+	bool	ipv6;
+	bool	tcp;
+	u8	l3_hdr_len;
+	u8	hdr_len; /* LSO header length */
+	u8	l3_start;
+	u16	lso_seg_size;
+	int	total_len; /* total data length, not include LSO header */
+};
+
+#define ENETC_LSO_MAX_DATA_LEN		SZ_256K
+
 #define ENETC_RX_MAXFRM_SIZE	ENETC_MAC_MAXFRM_SIZE
-#define ENETC_RXB_TRUESIZE	2048 /* PAGE_SIZE >> 1 */
+#define ENETC_PAGE_SIZE(order)		(PAGE_SIZE << (order))
+#define ENETC_RXB_TRUESIZE(order)	(ENETC_PAGE_SIZE(order) >> 1)
 #define ENETC_RXB_PAD		NET_SKB_PAD /* add extra space if needed */
-#define ENETC_RXB_DMA_SIZE	\
-	(SKB_WITH_OVERHEAD(ENETC_RXB_TRUESIZE) - ENETC_RXB_PAD)
-#define ENETC_RXB_DMA_SIZE_XDP	\
-	(SKB_WITH_OVERHEAD(ENETC_RXB_TRUESIZE) - XDP_PACKET_HEADROOM)
+#define ENETC_RXB_DMA_SIZE(order)	\
+	(SKB_WITH_OVERHEAD(ENETC_RXB_TRUESIZE(order)) - ENETC_RXB_PAD)
+#define ENETC_RXB_DMA_SIZE_XDP(order)	\
+	(SKB_WITH_OVERHEAD(ENETC_RXB_TRUESIZE(order)) \
+	 - XDP_PACKET_HEADROOM)
 
 struct enetc_rx_swbd {
-	struct xdp_buff *xsk_buff;
-	struct page *page;
 	dma_addr_t dma;
-	enum dma_data_direction dir;
+	struct page *page;
+	struct xdp_buff *xsk_buff;
 	u16 page_offset;
+	enum dma_data_direction dir;
 	u16 len;
 };
 
 /* ENETC overhead: optional extension BD + 1 BD gap */
 #define ENETC_TXBDS_NEEDED(val)	((val) + 2)
-/* max # of chained Tx BDs is 15, including head and extension BD */
+/* For LS1028A, max # of chained Tx BDs is 15, including head and
+ * extension BD.
+ */
 #define ENETC_MAX_SKB_FRAGS	13
-#define ENETC_TXBDS_MAX_NEEDED	ENETC_TXBDS_NEEDED(ENETC_MAX_SKB_FRAGS + 1)
+/* For ENETC v4 and later versions, max # of chained Tx BDs is 63,
+ * including head and extension BD, but the range of MAX_SKB_FRAGS
+ * is 17 ~ 45, so set ENETC4_MAX_SKB_FRAGS to MAX_SKB_FRAGS.
+ */
+#define ENETC4_MAX_SKB_FRAGS		MAX_SKB_FRAGS
+#define ENETC_TXBDS_MAX_NEEDED(x)	ENETC_TXBDS_NEEDED((x) + 1)
 
 struct enetc_ring_stats {
-	unsigned int packets;
-	unsigned int bytes;
-	unsigned int rx_alloc_errs;
-	unsigned int xdp_drops;
-	unsigned int xdp_tx;
-	unsigned int xdp_tx_drops;
-	unsigned int xdp_redirect;
-	unsigned int xdp_redirect_failures;
-	unsigned int xdp_redirect_sg;
-	unsigned int recycles;
-	unsigned int recycle_failures;
-	unsigned int win_drop;
+	unsigned long packets;
+	unsigned long bytes;
+	unsigned long rx_alloc_errs;
+	unsigned long xdp_drops;
+	unsigned long xdp_tx;
+	unsigned long xdp_tx_drops;
+	unsigned long xdp_redirect;
+	unsigned long xdp_redirect_failures;
+	unsigned long recycles;
+	unsigned long recycle_failures;
+	unsigned long win_drop;
 };
 
 struct enetc_xdp_data {
 	struct xdp_rxq_info rxq;
-	struct xsk_buff_pool *xsk_pool;
 	struct bpf_prog *prog;
+	struct xsk_buff_pool *xsk_pool;
+	struct xdp_buff **xsk_batch;
 	int xdp_tx_in_flight;
 };
 
 #define ENETC_RX_RING_DEFAULT_SIZE	2048
 #define ENETC_TX_RING_DEFAULT_SIZE	2048
+
 #define ENETC_DEFAULT_TX_WORK		(ENETC_TX_RING_DEFAULT_SIZE / 2)
-#define ENETC_XSK_TX_BATCH		ENETC_DEFAULT_TX_WORK
+#define ENETC_XSK_TX_BUDGET		256
+
+struct enetc_bdr_resource {
+	/* Input arguments saved for teardown */
+	struct device *dev; /* for DMA mapping */
+	size_t bd_count;
+	size_t bd_size;
+
+	/* Resource proper */
+	void *bd_base; /* points to Rx or Tx BD ring */
+	dma_addr_t bd_dma_base;
+	union {
+		struct enetc_tx_swbd *tx_swbd;
+		struct enetc_rx_swbd *rx_swbd;
+	};
+	char *tso_headers;
+	dma_addr_t tso_headers_dma;
+};
 
 struct enetc_bdr {
 	struct device *dev; /* for DMA mapping */
@@ -117,6 +228,7 @@ struct enetc_bdr {
 	};
 	void __iomem *idr; /* Interrupt Detect Register pointer */
 
+	int page_order;
 	int buffer_offset;
 	struct enetc_xdp_data xdp;
 
@@ -137,20 +249,25 @@ static inline void enetc_bdr_idx_inc(struct enetc_bdr *bdr, int *i)
 		*i = 0;
 }
 
+/* enetc_num_bd() retrieves the BD count between a given ring start and
+ * end index.
+ */
+static inline int enetc_num_bd(struct enetc_bdr *ring, int first, int last)
+{
+	if (first < last)
+		return last - first;
+
+	return ring->bd_count + last - first;
+}
+
 static inline int enetc_bd_unused(struct enetc_bdr *bdr)
 {
-	if (bdr->next_to_clean > bdr->next_to_use)
-		return bdr->next_to_clean - bdr->next_to_use - 1;
-
-	return bdr->bd_count + bdr->next_to_clean - bdr->next_to_use - 1;
+	return enetc_num_bd(bdr, bdr->next_to_use, bdr->next_to_clean) - 1;
 }
 
 static inline int enetc_swbd_unused(struct enetc_bdr *bdr)
 {
-	if (bdr->next_to_clean > bdr->next_to_alloc)
-		return bdr->next_to_clean - bdr->next_to_alloc - 1;
-
-	return bdr->bd_count + bdr->next_to_clean - bdr->next_to_alloc - 1;
+	return enetc_num_bd(bdr, bdr->next_to_alloc, bdr->next_to_clean) - 1;
 }
 
 /* Control BD ring */
@@ -175,10 +292,9 @@ static inline union enetc_rx_bd *enetc_rxbd(struct enetc_bdr *rx_ring, int i)
 {
 	int hw_idx = i;
 
-#ifdef CONFIG_FSL_ENETC_PTP_CLOCK
 	if (rx_ring->ext_en)
 		hw_idx = 2 * i;
-#endif
+
 	return &(((union enetc_rx_bd *)rx_ring->bd_base)[hw_idx]);
 }
 
@@ -190,10 +306,8 @@ static inline void enetc_rxbd_next(struct enetc_bdr *rx_ring,
 
 	new_rxbd++;
 
-#ifdef CONFIG_FSL_ENETC_PTP_CLOCK
 	if (rx_ring->ext_en)
 		new_rxbd++;
-#endif
 
 	if (unlikely(++new_index == rx_ring->bd_count)) {
 		new_rxbd = rx_ring->bd_base;
@@ -209,15 +323,8 @@ static inline union enetc_rx_bd *enetc_rxbd_ext(union enetc_rx_bd *rxbd)
 	return ++rxbd;
 }
 
-struct enetc_msg_swbd {
-	void *vaddr;
-	dma_addr_t dma;
-	int size;
-};
-
-#ifdef CONFIG_ENETC_TSN
 /* Credit-Based Shaper parameters */
-struct cbs {
+struct enetc_cbs_tc_cfg {
 	u8 tc;
 	bool enable;
 	u8 bw;
@@ -226,18 +333,19 @@ struct cbs {
 	u32 idle_slope;
 	u32 send_slope;
 	u32 tc_max_sized_frame;
-	u32 max_interfrence_size;
+	u32 max_interference_size;
 };
 
 struct enetc_cbs {
 	u32 port_transmit_rate;
 	u32 port_max_size_frame;
 	u8 tc_nums;
-	struct cbs cbs[0];
+	struct enetc_cbs_tc_cfg tc_cfg[];
 };
-#endif
 
 #define ENETC_REV1	0x1
+#define ENETC_REV4	0x4
+
 enum enetc_errata {
 	ENETC_ERR_VLAN_ISOL	= BIT(0),
 	ENETC_ERR_UCMCSWP	= BIT(1),
@@ -246,6 +354,53 @@ enum enetc_errata {
 #define ENETC_SI_F_PSFP BIT(0)
 #define ENETC_SI_F_QBV  BIT(1)
 #define ENETC_SI_F_QBU  BIT(2)
+#define ENETC_SI_F_LSO	BIT(3)
+#define ENETC_SI_F_RSC	BIT(4)
+#define ENETC_SI_F_PPM	BIT(5) /* Pseduo MAC */
+
+struct enetc_drvdata {
+	u32 pmac_offset; /* Only valid for PSI which supports 802.1Qbu */
+	u8 tx_csum:1;
+	u8 shared_tx_rings:1;
+	u8 max_frags;
+	u64 sysclk_freq;
+	const struct ethtool_ops *eth_ops;
+};
+
+struct enetc_platform_info {
+	u16 revision;
+	u16 dev_id;
+	const struct enetc_drvdata *data;
+};
+
+struct enetc_debugfs_params {
+	u32 isit_eid;
+	u32 ist_eid;
+	u32 isft_eid;
+	u32 sgit_eid;
+	u32 sgclt_eid;
+	u32 isct_eid;
+	u32 rpt_eid;
+	u32 ipft_eid;
+};
+
+struct enetc_si;
+
+/*
+ * This structure defines the some common hooks for ENETC PSI and VSI.
+ * In addition, since VSI only uses the struct enetc_si as its private
+ * driver data, so this structure also define some hooks specifically
+ * for VSI. For VSI-specific hooks, the format is ‘vf_*()’.
+ */
+struct enetc_si_ops {
+	int (*vf_setup_cbdr)(struct enetc_si *si);
+	void (*vf_teardown_cbdr)(struct enetc_si *si);
+	int (*get_rss_table)(struct enetc_si *si, u32 *table, int count);
+	int (*set_rss_table)(struct enetc_si *si, const u32 *table, int count);
+	int (*vf_register_msg_msix)(struct enetc_si *si);
+	void (*vf_free_msg_msix)(struct enetc_si *si);
+	int (*vf_register_link_status_notify)(struct enetc_si *si, bool notify);
+};
 
 /* PCI IEP device data */
 struct enetc_si {
@@ -255,20 +410,52 @@ struct enetc_si {
 
 	struct net_device *ndev; /* back ref. */
 
-	struct enetc_cbdr cbd_ring;
+	union {
+		struct enetc_cbdr cbd_ring; /* Only ENETC 1.0 */
+		struct ntmp_user ntmp_user; /* ENETC 4.1 and later */
+	};
 
 	int num_rx_rings; /* how many rings are available in the SI */
 	int num_tx_rings;
 	int num_fs_entries;
 	int num_rss; /* number of RSS buckets */
+	int max_ipf_entries; /* Only valid for PSI */
 	unsigned short pad;
+	u16 revision;
 	int hw_features;
-#ifdef CONFIG_ENETC_TSN
+	const struct enetc_drvdata *drvdata;
+	const struct enetc_si_ops *ops;
+
+	struct workqueue_struct *workqueue;
+	struct work_struct rx_mode_task;
+	struct dentry *debugfs_root;
+	struct enetc_debugfs_params dbg_params;
+
+	/* mailbox message lock, serialize message processing*/
+	struct mutex msg_lock;
+	struct work_struct msg_task;
+	char msg_int_name[ENETC_INT_NAME_MAX];
+	struct enetc_mac_filter mac_filter[MADDR_TYPE];
+	struct device_link *devlink;
+
+	DECLARE_BITMAP(vlan_ht_filter, ENETC_VLAN_HT_SIZE);
+	DECLARE_BITMAP(active_vlans, VLAN_N_VID);
 	struct enetc_cbs *ecbs;
-#endif
+
+	void *priv;  /* used by enetc_pci_uio driver */
 };
 
 #define ENETC_SI_ALIGN	32
+
+static inline bool is_enetc_rev1(struct enetc_si *si)
+{
+	return si->pdev->revision == ENETC_REV1;
+}
+
+static inline bool is_enetc_rev4(struct enetc_si *si)
+{
+	return si->pdev->revision == ENETC_REV4;
+}
 
 static inline void *enetc_si_priv(const struct enetc_si *si)
 {
@@ -296,12 +483,17 @@ static inline int enetc_pf_to_port(struct pci_dev *pf_pdev)
 	}
 }
 
+static inline bool enetc_is_pseudo_mac(struct enetc_si *si)
+{
+	return si->hw_features & ENETC_SI_F_PPM;
+}
+
 #define ENETC_MAX_NUM_TXQS	8
-#define ENETC_INT_NAME_MAX	(IFNAMSIZ + 8)
 
 struct enetc_int_vector {
 	void __iomem *rbier;
 	void __iomem *tbier_base;
+	void __iomem *ricr0;
 	void __iomem *ricr1;
 	unsigned long tx_rings_map;
 	int count_tx_rings;
@@ -313,15 +505,17 @@ struct enetc_int_vector {
 	char name[ENETC_INT_NAME_MAX];
 
 	struct enetc_bdr rx_ring;
-	struct enetc_bdr tx_ring[];
+	struct enetc_bdr tx_ring[] __counted_by(count_tx_rings);
 } ____cacheline_aligned_in_smp;
 
 struct enetc_cls_rule {
 	struct ethtool_rx_flow_spec fs;
-	int used;
+	u32 entry_id;
+	u32 used:1;
+	u32 is_rfs:1;
 };
 
-#define ENETC_MAX_BDR_INT	2 /* fixed to max # of available cpus */
+#define ENETC_MAX_BDR_INT	6 /* fixed to max # of available cpus */
 struct psfp_cap {
 	u32 max_streamid;
 	u32 max_psfp_filter;
@@ -331,7 +525,6 @@ struct psfp_cap {
 };
 
 #define ENETC_F_TX_TSTAMP_MASK	0xff
-/* TODO: more hardware offloads */
 enum enetc_active_offloads {
 	/* 8 bits reserved for TX timestamp types (hwtstamp_tx_types) */
 	ENETC_F_TX_TSTAMP		= BIT(0),
@@ -341,11 +534,15 @@ enum enetc_active_offloads {
 	ENETC_F_QBV			= BIT(9),
 	ENETC_F_QCI			= BIT(10),
 	ENETC_F_QBU			= BIT(11),
+	ENETC_F_TXCSUM			= BIT(12),
+	ENETC_F_LSO			= BIT(13),
+	ENETC_F_RSC			= BIT(14),
 };
 
 enum enetc_flags_bit {
 	ENETC_TX_ONESTEP_TSTAMP_IN_PROGRESS = 0,
-	ENETC_DOWN,
+	ENETC_TX_DOWN,
+	ENETC_SUSPEND,
 };
 
 /* interrupt coalescing modes */
@@ -361,7 +558,6 @@ enum enetc_ic_mode {
 
 #define ENETC_RXIC_PKTTHR	min_t(u32, 256, ENETC_RX_RING_DEFAULT_SIZE / 2)
 #define ENETC_TXIC_PKTTHR	min_t(u32, 128, ENETC_TX_RING_DEFAULT_SIZE / 2)
-#define ENETC_TXIC_TIMETHR	enetc_usecs_to_cycles(600)
 
 struct enetc_ndev_priv {
 	struct net_device *ndev;
@@ -374,6 +570,10 @@ struct enetc_ndev_priv {
 	u16 rx_bd_count, tx_bd_count;
 
 	u16 msg_enable;
+
+	u8 preemptible_tcs;
+	u8 max_frags; /* The maximum number of BDs for fragments */
+
 	enum enetc_active_offloads active_offloads;
 
 	u32 speed; /* store speed for compare update pspeed */
@@ -381,12 +581,18 @@ struct enetc_ndev_priv {
 	struct enetc_bdr **xdp_tx_ring;
 	struct enetc_bdr *tx_ring[16];
 	struct enetc_bdr *rx_ring[16];
+	const struct enetc_bdr_resource *tx_res;
+	const struct enetc_bdr_resource *rx_res;
 
 	struct enetc_cls_rule *cls_rules;
 
 	struct psfp_cap psfp_cap;
 
+	/* Minimum number of TX queues required by the network stack */
+	unsigned int min_num_stack_tx_queues;
+
 	struct phylink *phylink;
+	struct fwnode_handle *swnode;
 	int ic_mode;
 	u32 tx_ictt;
 
@@ -396,26 +602,43 @@ struct enetc_ndev_priv {
 
 	struct work_struct	tx_onestep_tstamp;
 	struct sk_buff_head	tx_skbs;
-};
 
-/* Messaging */
+	/* Serialize access to MAC Merge state between ethtool requests
+	 * and link state updates
+	 */
+	struct mutex		mm_lock;
 
-/* VF-PF set primary MAC address message format */
-struct enetc_msg_cmd_set_primary_mac {
-	struct enetc_msg_cmd_header header;
-	struct sockaddr mac;
+	struct clk *ref_clk; /* RGMII/RMII reference clock */
+	u64 sysclk_freq; /* NETC system clock frequency */
+
+	/* Kernel stack and XDP share the tx rings */
+	bool shared_tx_rings;
+
+	struct pci_dev *timer_pdev; /* timer device */
+
+	u32 ipt_wol_eid;
+	int wolopts;
+
+	struct ethtool_keee eee;
+	int page_order;
+
+	struct enetc_xsk_etf_sched *xsk_etf;
+	bool xdp_etf_enabled;
 };
 
 #define ENETC_CBD(R, i)	(&(((struct enetc_cbd *)((R).bd_base))[i]))
 
 #define ENETC_CBDR_TIMEOUT	1000 /* usecs */
 
-/* PTP driver exports */
-extern int enetc_phc_index;
+extern const struct xdp_metadata_ops enetc_xdp_metadata_ops;
+extern const struct xsk_tx_metadata_ops enetc_xsk_tx_metadata_ops;
 
 /* SI common */
+u32 enetc_port_mac_rd(struct enetc_si *si, u32 reg);
+void enetc_port_mac_wr(struct enetc_si *si, u32 reg, u32 val);
 int enetc_pci_probe(struct pci_dev *pdev, const char *name, int sizeof_priv);
 void enetc_pci_remove(struct pci_dev *pdev);
+int enetc_alloc_msix_vectors(struct enetc_ndev_priv *priv);
 int enetc_alloc_msix(struct enetc_ndev_priv *priv);
 void enetc_free_msix(struct enetc_ndev_priv *priv);
 void enetc_get_si_caps(struct enetc_si *si);
@@ -423,6 +646,13 @@ void enetc_init_si_rings_params(struct enetc_ndev_priv *priv);
 int enetc_alloc_si_resources(struct enetc_ndev_priv *priv);
 void enetc_free_si_resources(struct enetc_ndev_priv *priv);
 int enetc_configure_si(struct enetc_ndev_priv *priv);
+int enetc_get_driver_data(struct enetc_si *si);
+void enetc_add_mac_addr_ht_filter(struct enetc_mac_filter *filter,
+				  const unsigned char *addr);
+void enetc_reset_mac_addr_filter(struct enetc_mac_filter *filter);
+int enetc_vid_hash_idx(unsigned int vid);
+void enetc_refresh_vlan_ht_filter(struct enetc_si *si);
+int enetc_restore_hw_config(struct enetc_si *si);
 
 int enetc_open(struct net_device *ndev);
 int enetc_close(struct net_device *ndev);
@@ -433,27 +663,58 @@ struct net_device_stats *enetc_get_stats(struct net_device *ndev);
 void enetc_set_features(struct net_device *ndev, netdev_features_t features);
 int enetc_ioctl(struct net_device *ndev, struct ifreq *rq, int cmd);
 int enetc_setup_tc_mqprio(struct net_device *ndev, void *type_data);
+void enetc_reset_tc_mqprio(struct net_device *ndev);
 int enetc_setup_bpf(struct net_device *ndev, struct netdev_bpf *bpf);
 int enetc_xdp_xmit(struct net_device *ndev, int num_frames,
 		   struct xdp_frame **frames, u32 flags);
-int enetc_xsk_wakeup(struct net_device *dev, u32 queue, u32 flags);
+int enetc_xsk_wakeup(struct net_device *ndev, u32 queue, u32 flags);
+ktime_t enetc_get_tstamp(struct net_device *ndev,
+				const struct skb_shared_hwtstamps *hwtstamps,
+				bool cycles);
+int enetc_xsk_etf_setup(struct net_device *ndev,
+			struct tc_etf_qopt_offload *qopt);
+
+int enetc_hwtstamp_get(struct net_device *ndev,
+		       struct kernel_hwtstamp_config *config);
+int enetc_hwtstamp_set(struct net_device *ndev,
+		       struct kernel_hwtstamp_config *config,
+		       struct netlink_ext_ack *extack);
+void enetc_change_preemptible_tcs(struct enetc_ndev_priv *priv,
+				  u8 preemptible_tcs);
+
+int enetc_suspend(struct net_device *ndev, bool wol);
+int enetc_resume(struct net_device *ndev, bool wol);
+struct fwnode_handle *enetc_fwnode(struct enetc_ndev_priv *priv);
+int enetc_reconfigure(struct enetc_ndev_priv *priv, bool extended,
+		      int (*cb)(struct enetc_ndev_priv *priv, void *ctx),
+		      void *ctx);
 
 /* ethtool */
+extern const struct ethtool_ops enetc_pf_ethtool_ops;
+extern const struct ethtool_ops enetc4_pf_ethtool_ops;
+extern const struct ethtool_ops enetc_vf_ethtool_ops;
+extern const struct ethtool_ops enetc4_ppm_ethtool_ops;
 void enetc_set_ethtool_ops(struct net_device *ndev);
+void enetc_mm_commit_preemptible_tcs(struct enetc_ndev_priv *priv);
+void enetc_eee_mode_set(struct net_device *dev, bool enable);
 
 /* control buffer descriptor ring (CBDR) */
-int enetc_setup_cbdr(struct device *dev, struct enetc_hw *hw, int bd_count,
-		     struct enetc_cbdr *cbdr);
-void enetc_teardown_cbdr(struct enetc_cbdr *cbdr);
+int enetc_setup_cbdr(struct enetc_si *si);
+void enetc_teardown_cbdr(struct enetc_si *si);
+int enetc4_setup_cbdr(struct enetc_si *si);
+void enetc4_teardown_cbdr(struct enetc_si *si);
+void enetc4_enable_cbdr(struct enetc_si *si);
 int enetc_set_mac_flt_entry(struct enetc_si *si, int index,
 			    char *mac_addr, int si_map);
 int enetc_clear_mac_flt_entry(struct enetc_si *si, int index);
 int enetc_set_fs_entry(struct enetc_si *si, struct enetc_cmd_rfse *rfse,
 		       int index);
-void enetc_set_rss_key(struct enetc_hw *hw, const u8 *bytes);
+void enetc_set_rss_key(struct enetc_si *si, const u8 *bytes);
 int enetc_get_rss_table(struct enetc_si *si, u32 *table, int count);
 int enetc_set_rss_table(struct enetc_si *si, const u32 *table, int count);
 int enetc_send_cmd(struct enetc_si *si, struct enetc_cbd *cbd);
+int enetc4_get_rss_table(struct enetc_si *si, u32 *table, int count);
+int enetc4_set_rss_table(struct enetc_si *si, const u32 *table, int count);
 
 static inline void *enetc_cbd_alloc_data_mem(struct enetc_si *si,
 					     struct enetc_cbd *cbd,
@@ -494,8 +755,15 @@ static inline void enetc_cbd_free_data_mem(struct enetc_si *si, int size,
 void enetc_reset_ptcmsdur(struct enetc_hw *hw);
 void enetc_set_ptcmsdur(struct enetc_hw *hw, u32 *queue_max_sdu);
 
+static inline bool enetc_ptp_clock_is_enabled(struct enetc_si *si)
+{
+	if (is_enetc_rev1(si))
+		return IS_ENABLED(CONFIG_FSL_ENETC_PTP_CLOCK);
+
+	return IS_ENABLED(CONFIG_PTP_NETC_V4_TIMER);
+}
+
 #ifdef CONFIG_FSL_ENETC_QOS
-int enetc_qos_query_caps(struct net_device *ndev, void *type_data);
 int enetc_setup_tc_taprio(struct net_device *ndev, void *type_data);
 void enetc_sched_speed_set(struct enetc_ndev_priv *priv, int speed);
 int enetc_setup_tc_cbs(struct net_device *ndev, void *type_data);
@@ -563,7 +831,6 @@ static inline int enetc_psfp_disable(struct enetc_ndev_priv *priv)
 }
 
 #else
-#define enetc_qos_query_caps(ndev, type_data) -EOPNOTSUPP
 #define enetc_setup_tc_taprio(ndev, type_data) -EOPNOTSUPP
 #define enetc_sched_speed_set(priv, speed) (void)0
 #define enetc_setup_tc_cbs(ndev, type_data) -EOPNOTSUPP
@@ -590,15 +857,23 @@ static inline int enetc_set_psfp(struct net_device *ndev, bool en)
 }
 #endif
 
-#ifdef CONFIG_ENETC_TSN
+#if IS_ENABLED(CONFIG_TSN)
+
 void enetc_tsn_pf_init(struct net_device *netdev, struct pci_dev *pdev);
 void enetc_tsn_pf_deinit(struct net_device *netdev);
-void enetc_pspeed_set(struct enetc_ndev_priv *priv, int speed);
+void enetc_ptp_clock_update(void);
 
 #else
 
-#define enetc_tsn_pf_init(netdev, pdev) (void)0
-#define enetc_tsn_pf_deinit(netdev) (void)0
-#define enetc_pspeed_set(priv, speed) (void)0
+static inline void enetc_tsn_pf_init(struct net_device *netdev, struct pci_dev *pdev)
+{
+}
 
+static inline void enetc_tsn_pf_deinit(struct net_device *netdev)
+{
+}
+
+static inline void enetc_ptp_clock_update(void)
+{
+}
 #endif

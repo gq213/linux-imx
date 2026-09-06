@@ -2,7 +2,7 @@
 /*
  * PTP virtual clock driver
  *
- * Copyright 2021 NXP
+ * Copyright 2021, 2025 NXP
  */
 #include <linux/slab.h>
 #include <linux/hashtable.h>
@@ -18,6 +18,8 @@
 static DEFINE_SPINLOCK(vclock_hash_lock);
 
 static DEFINE_READ_MOSTLY_HASHTABLE(vclock_hash, 8);
+
+DEFINE_STATIC_SRCU(vclock_hash_srcu);
 
 static void ptp_vclock_hash_add(struct ptp_vclock *vclock)
 {
@@ -37,7 +39,26 @@ static void ptp_vclock_hash_del(struct ptp_vclock *vclock)
 
 	spin_unlock(&vclock_hash_lock);
 
-	synchronize_rcu();
+	synchronize_srcu(&vclock_hash_srcu);
+}
+
+/* This function and its return value (the vclock pointer) must be used
+ * inside the same SRCU read critical section
+ */
+static struct ptp_vclock *ptp_vclock_lookup(int vclock_index)
+{
+	unsigned int hash = vclock_index % HASH_SIZE(vclock_hash);
+	struct ptp_vclock *vclock;
+
+	hlist_for_each_entry_srcu(vclock, &vclock_hash[hash], vclock_hash_node,
+				  srcu_read_lock_held(&vclock_hash_srcu)) {
+		if (vclock->clock->index != vclock_index)
+			continue;
+
+		return vclock;
+	}
+
+	return NULL;
 }
 
 static int ptp_vclock_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
@@ -154,6 +175,243 @@ static long ptp_vclock_refresh(struct ptp_clock_info *ptp)
 	return PTP_VCLOCK_REFRESH_INTERVAL;
 }
 
+static void ptp_vclock_set_subclass(struct ptp_clock *ptp)
+{
+	lockdep_set_subclass(&ptp->clock.rwsem, PTP_LOCK_VIRTUAL);
+}
+
+/* Convert from virtual clock to physical time domain */
+static u64 ptp_vclock_to_hw_time(const struct timecounter *tc, u64 nsec)
+{
+	u64 ns_hw = tc->cycle_last;
+	u64 delta;
+
+	/* TODO implement a less costly conversion using a shift/mult rather
+	 * than an integer division ?
+	 */
+	if (nsec > tc->nsec) {
+		delta = nsec - tc->nsec;
+		delta <<= tc->cc->shift;
+		ns_hw += div_u64(delta, tc->cc->mult);
+	} else {
+		delta = tc->nsec - nsec;
+		delta <<= tc->cc->shift;
+		ns_hw -= div_u64(delta, tc->cc->mult);
+	}
+
+	return ns_hw;
+}
+
+static inline s64 ptp_clock_time_to_ns(const struct ptp_clock_time *ptp_time)
+{
+	struct timespec64 ts;
+
+	ts.tv_sec = ptp_time->sec;
+	ts.tv_nsec = ptp_time->nsec;
+
+	return timespec64_to_ns(&ts);
+}
+
+static inline struct ptp_clock_time ns_to_ptp_clock_time(s64 nsec)
+{
+	struct ptp_clock_time ptp_time;
+	struct timespec64 ts;
+
+	ts = ns_to_timespec64(nsec);
+
+	ptp_time.sec = ts.tv_sec;
+	ptp_time.nsec = ts.tv_nsec;
+
+	return ptp_time;
+}
+
+static inline struct timespec64 ptp_clock_time_to_timespec64(const struct ptp_clock_time *ptp_time)
+{
+	struct timespec64 ts;
+
+	ts.tv_sec = ptp_time->sec;
+	ts.tv_nsec = ptp_time->nsec;
+
+	return ts;
+}
+
+static inline struct ptp_clock_time timespec64_to_ptp_clock_time(const struct timespec64 ts)
+{
+	struct ptp_clock_time ptp_time;
+
+	ptp_time.sec = ts.tv_sec;
+	ptp_time.nsec = ts.tv_nsec;
+
+	return ptp_time;
+}
+
+/* This function converts from a virtual domain to a destination
+ * clock domain (either virtual or physical)
+ */
+int ptp_vclock_convert_timestamps(struct ptp_clock *ptp, struct ptp_clock_time *src_ts,
+				  unsigned int n_ts, int dst_phc_index,
+				  struct ptp_clock_time *dst_ts)
+{
+	struct ptp_vclock *vclock = info_to_vclock(ptp->info);
+	struct timespec64 src_timespec, dst_timespec;
+	struct ptp_vclock *vclock_dst;
+	int i, idx, rc = 0;
+	u64 dst_ns;
+
+	/* The destination clock domain is the same as the source, early exit. */
+	if (dst_phc_index == vclock->clock->index) {
+		memcpy(dst_ts, src_ts, n_ts * sizeof(struct ptp_clock_time));
+		goto out;
+	}
+
+	idx = srcu_read_lock(&vclock_hash_srcu);
+
+	vclock_dst = ptp_vclock_lookup(dst_phc_index);
+
+	if (vclock_dst) {
+		/* Check that both virtual clocks share the same physical parent. */
+		if (vclock_dst->pclock != vclock->pclock) {
+			rc = -EINVAL;
+			goto out_unlock_rcu;
+		}
+
+		if (mutex_lock_interruptible(&vclock->lock)) {
+			rc = -ERESTARTSYS;
+			goto out_unlock_rcu;
+		}
+
+		if (mutex_lock_interruptible(&vclock_dst->lock)) {
+			mutex_unlock(&vclock->lock);
+			rc = -ERESTARTSYS;
+			goto out_unlock_rcu;
+		}
+
+		for (i = 0; i < n_ts; i++) {
+			/* Convert from source virtual time domain to cycles */
+			dst_ns = ptp_vclock_to_hw_time(&vclock->tc,
+						       ptp_clock_time_to_ns(src_ts + i));
+
+			/* Convert from cycles to destination virtual time domain */
+			dst_ns = timecounter_cyc2time(&vclock_dst->tc, dst_ns);
+			*(dst_ts + i) = ns_to_ptp_clock_time(dst_ns);
+		}
+
+		mutex_unlock(&vclock_dst->lock);
+		mutex_unlock(&vclock->lock);
+	} else {
+		/* Check that the destination physical clock is the parent of the source
+		 * virtual clock.
+		 */
+		if (vclock->pclock->index != dst_phc_index) {
+			rc = -EINVAL;
+			goto out_unlock_rcu;
+		}
+
+		/* Physical clocks with cycles support must provide a free-running cycles 
+		 * to hardware conversion function.
+		 */
+		if (vclock->pclock->has_cycles && !vclock->pclock->info->converttime) {
+			rc = -EOPNOTSUPP;
+			goto out_unlock_rcu;
+		}
+
+		if (mutex_lock_interruptible(&vclock->lock)) {
+			rc = -EINTR;
+			goto out_unlock_rcu;
+		}
+
+		/* Destination is physical (cycles or hardware) */
+		for (i = 0; i < n_ts; i++) {
+			/* Convert from source virtual time domain to cycles */
+			dst_ns = ptp_vclock_to_hw_time(&vclock->tc,
+						       ptp_clock_time_to_ns(src_ts + i));
+			*(dst_ts + i) = ns_to_ptp_clock_time(dst_ns);
+
+			if (vclock->pclock->has_cycles) {
+				/* Convert from cycles to hardware time domain */
+				src_timespec = ptp_clock_time_to_timespec64(dst_ts + i);
+				vclock->pclock->info->converttime(vclock->pclock->info,
+								  src_timespec,
+								  &dst_timespec, false);
+				*(dst_ts + i) = timespec64_to_ptp_clock_time(dst_timespec);
+			}
+		}
+
+		mutex_unlock(&vclock->lock);
+	}
+
+out_unlock_rcu:
+	srcu_read_unlock(&vclock_hash_srcu, idx);
+
+out:
+	return rc;
+}
+
+/* This function converts from a physical (hardware or cycles) domain
+ * to a virtual destination clock domain
+ */
+int ptp_vclock_convert_from_hw_timestamps(struct ptp_clock *ptp, struct ptp_clock_time *src_ts,
+					  unsigned int n_ts, int dst_vclock_index,
+					  struct ptp_clock_time *dst_ts)
+{
+	struct timespec64 src_timespec, dst_timespec;
+	struct ptp_vclock *vclock;
+	int i, idx, rc = 0;
+	u64 dst_ns;
+
+	idx = srcu_read_lock(&vclock_hash_srcu);
+
+	vclock = ptp_vclock_lookup(dst_vclock_index);
+
+	/* Check that dst_vclock_index point to a virtual clock. */
+	if (!vclock) {
+		rc = -EINVAL;
+		goto out_unlock_rcu;
+	}
+
+	/* Check that the source physical clock is the parent of the
+	 * destination virtual clock.
+	 */
+	if (vclock->pclock != ptp) {
+		rc = -EINVAL;
+		goto out_unlock_rcu;
+	}
+
+	/* Physical clocks with cycles support must provide a free-running cycles
+	* to hardware conversion function.
+	*/
+	if (vclock->pclock->has_cycles && !vclock->pclock->info->converttime) {
+		rc = -EOPNOTSUPP;
+		goto out_unlock_rcu;
+	}
+
+	if (mutex_lock_interruptible(&vclock->lock)) {
+		rc = -ERESTARTSYS;
+		goto out_unlock_rcu;
+	}
+
+	for (i = 0; i < n_ts; i++) {
+		if (ptp->has_cycles) {
+			/* Convert from hardware to virtual's free-running parent (cycles) */
+			src_timespec = ptp_clock_time_to_timespec64(src_ts + i);
+			ptp->info->converttime(ptp->info, src_timespec, &dst_timespec,
+					       true);
+			*(src_ts + i) = timespec64_to_ptp_clock_time(dst_timespec);
+		}
+
+		/* Convert from free-running to virtual clock */
+		dst_ns = timecounter_cyc2time(&vclock->tc, ptp_clock_time_to_ns(src_ts + i));
+		*(dst_ts + i) = ns_to_ptp_clock_time(dst_ns);
+	}
+
+	mutex_unlock(&vclock->lock);
+
+out_unlock_rcu:
+	srcu_read_unlock(&vclock_hash_srcu, idx);
+
+	return rc;
+}
+
 static const struct ptp_clock_info ptp_vclock_info = {
 	.owner		= THIS_MODULE,
 	.name		= "ptp virtual clock",
@@ -164,7 +422,7 @@ static const struct ptp_clock_info ptp_vclock_info = {
 	.do_aux_work	= ptp_vclock_refresh,
 };
 
-static u64 ptp_vclock_read(const struct cyclecounter *cc)
+static u64 ptp_vclock_read(struct cyclecounter *cc)
 {
 	struct ptp_vclock *vclock = cc_to_vclock(cc);
 	struct ptp_clock *ptp = vclock->pclock;
@@ -213,6 +471,8 @@ struct ptp_vclock *ptp_vclock_register(struct ptp_clock *pclock)
 		return NULL;
 	}
 
+	ptp_vclock_set_subclass(vclock->clock);
+
 	timecounter_init(&vclock->tc, &vclock->cc, 0);
 	ptp_schedule_worker(vclock->clock, PTP_VCLOCK_REFRESH_INTERVAL);
 
@@ -241,7 +501,7 @@ int ptp_get_vclocks_index(int pclock_index, int **vclock_index)
 		return num;
 
 	snprintf(name, PTP_CLOCK_NAME_LEN, "ptp%d", pclock_index);
-	dev = class_find_device_by_name(ptp_class, name);
+	dev = class_find_device_by_name(&ptp_class, name);
 	if (!dev)
 		return num;
 
@@ -267,27 +527,25 @@ EXPORT_SYMBOL(ptp_get_vclocks_index);
 
 ktime_t ptp_convert_timestamp(const ktime_t *hwtstamp, int vclock_index)
 {
-	unsigned int hash = vclock_index % HASH_SIZE(vclock_hash);
 	struct ptp_vclock *vclock;
-	u64 ns;
 	u64 vclock_ns = 0;
+	int idx;
+	u64 ns;
 
 	ns = ktime_to_ns(*hwtstamp);
 
-	rcu_read_lock();
+	idx = srcu_read_lock(&vclock_hash_srcu);
 
-	hlist_for_each_entry_rcu(vclock, &vclock_hash[hash], vclock_hash_node) {
-		if (vclock->clock->index != vclock_index)
-			continue;
-
+	vclock = ptp_vclock_lookup(vclock_index);
+	if (vclock) {
 		if (mutex_lock_interruptible(&vclock->lock))
-			break;
+			goto out_unlock_rcu;
 		vclock_ns = timecounter_cyc2time(&vclock->tc, ns);
 		mutex_unlock(&vclock->lock);
-		break;
 	}
 
-	rcu_read_unlock();
+out_unlock_rcu:
+	srcu_read_unlock(&vclock_hash_srcu, idx);
 
 	return ns_to_ktime(vclock_ns);
 }

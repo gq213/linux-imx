@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright 2019 NXP
+ * Copyright 2019,2023 NXP
  */
 
 #include <linux/slab.h>
@@ -13,8 +13,24 @@
 #include <linux/tty_flip.h>
 #include <linux/virtio.h>
 
+#ifdef CONFIG_RPMSG_8M_BUF
+struct rpmsg_hdr {
+	__rpmsg32 src;
+	__rpmsg32 dst;
+	__rpmsg32 reserved;
+	__rpmsg16 len;
+	__rpmsg16 flags;
+	u8 data[];
+} __packed;
+
+#define MAX_RPMSG_BUF_SIZE	(512 * 2)
+/* this needs to be less then (RPMSG_BUF_SIZE - sizeof(struct rpmsg_hdr)) */
+#define RPMSG_MAX_SIZE		(MAX_RPMSG_BUF_SIZE - sizeof(struct rpmsg_hdr))
+#else
 /* this needs to be less then (RPMSG_BUF_SIZE - sizeof(struct rpmsg_hdr)) */
 #define RPMSG_MAX_SIZE		256
+#endif
+
 #define MSG		"hello world!"
 
 /*
@@ -78,8 +94,8 @@ static void rpmsgtty_close(struct tty_struct *tty, struct file *filp)
 	return tty_port_close(tty->port, tty, filp);
 }
 
-static int rpmsgtty_write(struct tty_struct *tty, const unsigned char *buf,
-			 int total)
+static ssize_t rpmsgtty_write(struct tty_struct *tty, const unsigned char *buf,
+			 size_t total)
 {
 	int count, ret = 0;
 	const unsigned char *tbuf;

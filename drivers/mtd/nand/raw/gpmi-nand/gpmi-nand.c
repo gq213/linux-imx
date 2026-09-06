@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL- .0+
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Freescale GPMI NAND Flash Driver
  *
@@ -13,18 +13,16 @@
 #include <linux/module.h>
 #include <linux/mtd/partitions.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/busfreq-imx.h>
 #include <linux/pm_runtime.h>
 #include <linux/debugfs.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/dma/mxs-dma.h>
+#include <linux/string_choices.h>
 #include "gpmi-nand.h"
 #include "gpmi-regs.h"
 #include "bch-regs.h"
-
-/* export the bch geometry to dbgfs */
-static struct debugfs_blob_wrapper dbg_bch_geo;
 
 /* Resource names for the GPMI NAND driver. */
 #define GPMI_NAND_GPMI_REGS_ADDR_RES_NAME  "gpmi-nand"
@@ -149,16 +147,17 @@ err_clk:
 	return ret;
 }
 
+#define gpmi_enable_clk(x)	__gpmi_enable_clk(x, true)
+#define gpmi_disable_clk(x)	__gpmi_enable_clk(x, false)
+
 static int gpmi_init(struct gpmi_nand_data *this)
 {
 	struct resources *r = &this->resources;
 	int ret = 0;
 
-	ret = pm_runtime_get_sync(this->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(this->dev);
+	ret = pm_runtime_resume_and_get(this->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	ret = gpmi_reset_block(r->gpmi_regs, false);
 	if (ret)
@@ -735,34 +734,25 @@ static int common_nfc_set_geometry(struct gpmi_nand_data *this)
 	return err;
 }
 
-int bch_create_debugfs(struct gpmi_nand_data *this)
+#if defined(CONFIG_DEBUG_FS)
+struct debugfs_blob_wrapper dbg_bch_geo;
+static void bch_create_debugfs(struct gpmi_nand_data *this)
 {
 	struct bch_geometry *bch_geo = &this->bch_geometry;
 	struct dentry *dbg_root;
 
 	dbg_root = debugfs_create_dir("gpmi-nand", NULL);
-	if (!dbg_root) {
-		dev_err(this->dev, "failed to create debug directory\n");
-		return -EINVAL;
-	}
-
 	dbg_bch_geo.data = (void *)bch_geo;
 	dbg_bch_geo.size = sizeof(struct bch_geometry);
-	if (!debugfs_create_blob("bch_geometry", S_IRUGO,
-				dbg_root, &dbg_bch_geo)) {
-		dev_err(this->dev, "failed to create debug bch geometry\n");
-		return -EINVAL;
-	}
-
+	debugfs_create_blob("bch_geometry", 0444, dbg_root, &dbg_bch_geo);
 	/* create raw mode flag */
-	if (!debugfs_create_file("raw_mode", S_IRUGO,
-				dbg_root, NULL, NULL)) {
-		dev_err(this->dev, "failed to create raw mode flag\n");
-		return -EINVAL;
-	}
-
-	return 0;
+	debugfs_create_file_full("raw_mode", 0444, dbg_root, NULL, NULL, NULL);
 }
+#else
+static void bch_create_debugfs(struct gpmi_nand_data *this)
+{
+}
+#endif /* CONFIG_DEBUG_FS */
 
 /* Configures the geometry for BCH.  */
 static int bch_set_geometry(struct gpmi_nand_data *this)
@@ -774,9 +764,8 @@ static int bch_set_geometry(struct gpmi_nand_data *this)
 	if (ret)
 		return ret;
 
-	ret = pm_runtime_get_sync(this->dev);
+	ret = pm_runtime_resume_and_get(this->dev);
 	if (ret < 0) {
-		pm_runtime_put_autosuspend(this->dev);
 		return ret;
 	}
 
@@ -1022,8 +1011,7 @@ static int gpmi_setup_interface(struct nand_chip *chip, int chipnr,
 		return PTR_ERR(sdr);
 
 	/* Only MX28/MX6 GPMI controller can reach EDO timings */
-	if (sdr->tRC_min <= 25000 && !GPMI_IS_MX28(this) &&
-	    !(GPMI_IS_MX6(this) || GPMI_IS_MX8(this)))
+	if (sdr->tRC_min <= 25000 && !this->devdata->support_edo_timing)
 		return -ENOTSUPP;
 
 	/* Stop here if this call was just a check */
@@ -1182,6 +1170,7 @@ static const struct gpmi_devdata gpmi_devdata_imx28 = {
 	.type = IS_MX28,
 	.bch_max_ecc_strength = 20,
 	.max_chain_delay = 16000,
+	.support_edo_timing = true,
 	.clks = gpmi_clks_for_mx2x,
 	.clks_count = ARRAY_SIZE(gpmi_clks_for_mx2x),
 };
@@ -1194,6 +1183,7 @@ static const struct gpmi_devdata gpmi_devdata_imx6q = {
 	.type = IS_MX6Q,
 	.bch_max_ecc_strength = 40,
 	.max_chain_delay = 12000,
+	.support_edo_timing = true,
 	.clks = gpmi_clks_for_mx6,
 	.clks_count = ARRAY_SIZE(gpmi_clks_for_mx6),
 };
@@ -1202,6 +1192,7 @@ static const struct gpmi_devdata gpmi_devdata_imx6qp = {
 	.type = IS_MX6QP,
 	.bch_max_ecc_strength = 40,
 	.max_chain_delay = 12000,
+	.support_edo_timing = true,
 	.clks = gpmi_clks_for_mx6,
 	.clks_count = ARRAY_SIZE(gpmi_clks_for_mx6),
 };
@@ -1210,22 +1201,7 @@ static const struct gpmi_devdata gpmi_devdata_imx6sx = {
 	.type = IS_MX6SX,
 	.bch_max_ecc_strength = 62,
 	.max_chain_delay = 12000,
-	.clks = gpmi_clks_for_mx6,
-	.clks_count = ARRAY_SIZE(gpmi_clks_for_mx6),
-};
-
-static const struct gpmi_devdata gpmi_devdata_imx6ul = {
-	.type = IS_MX6UL,
-	.bch_max_ecc_strength = 40,
-	.max_chain_delay = 12000,
-	.clks = gpmi_clks_for_mx6,
-	.clks_count = ARRAY_SIZE(gpmi_clks_for_mx6),
-};
-
-static const struct gpmi_devdata gpmi_devdata_imx6ull = {
-	.type = IS_MX6ULL,
-	.bch_max_ecc_strength = 40,
-	.max_chain_delay = 12000,
+	.support_edo_timing = true,
 	.clks = gpmi_clks_for_mx6,
 	.clks_count = ARRAY_SIZE(gpmi_clks_for_mx6),
 };
@@ -1238,17 +1214,20 @@ static const struct gpmi_devdata gpmi_devdata_imx7d = {
 	.type = IS_MX7D,
 	.bch_max_ecc_strength = 62,
 	.max_chain_delay = 12000,
+	.support_edo_timing = true,
 	.clks = gpmi_clks_for_mx7d,
 	.clks_count = ARRAY_SIZE(gpmi_clks_for_mx7d),
 };
+
 static const char * gpmi_clks_for_mx8qxp[GPMI_CLK_MAX] = {
-	"gpmi_clk", "gpmi_apb_clk", "bch_clk", "bch_apb_clk",
+	"gpmi_io", "gpmi_apb", "gpmi_bch", "gpmi_bch_apb",
 };
 
 static const struct gpmi_devdata gpmi_devdata_imx8qxp = {
 	.type = IS_MX8QXP,
 	.bch_max_ecc_strength = 62,
 	.max_chain_delay = 12000,
+	.support_edo_timing = true,
 	.clks = gpmi_clks_for_mx8qxp,
 	.clks_count = ARRAY_SIZE(gpmi_clks_for_mx8qxp),
 };
@@ -1315,6 +1294,14 @@ static int acquire_dma_channels(struct gpmi_nand_data *this)
 		release_dma_channels(this);
 	} else {
 		this->dma_chans[0] = dma_chan;
+		this->link = device_link_add(&pdev->dev,
+					     dma_chan->device->dev,
+					     DL_FLAG_AUTOREMOVE_CONSUMER |
+					     DL_FLAG_PM_RUNTIME);
+		if (IS_ERR(this->link)) {
+			dev_err(this->dev, "failed to add device link\n");
+			ret = PTR_ERR(this->link);
+		}
 	}
 
 	return ret;
@@ -1356,6 +1343,10 @@ static int acquire_resources(struct gpmi_nand_data *this)
 		goto exit_regs;
 
 	ret = acquire_bch_irq(this, bch_irq);
+	if (ret)
+		goto exit_regs;
+
+	ret = acquire_dma_channels(this);
 	if (ret)
 		goto exit_regs;
 
@@ -2333,10 +2324,8 @@ static int gpmi_init_last(struct gpmi_nand_data *this)
 	if (ret)
 		return ret;
 
-	/* Save the geometry to debugfs*/
-	ret = bch_create_debugfs(this);
-	if (ret)
-		return ret;
+	/* if DEBUG_FS enabled, Save the geometry to debugfs */
+	bch_create_debugfs(this);
 
 	/* Init the nand_ecc_ctrl{} */
 	ecc->read_page	= gpmi_ecc_read_page;
@@ -2378,8 +2367,8 @@ static int gpmi_nand_attach_chip(struct nand_chip *chip)
 					  "fsl,no-blockmark-swap"))
 			this->swap_block_mark = false;
 	}
-	dev_dbg(this->dev, "Blockmark swapping %sabled\n",
-		this->swap_block_mark ? "en" : "dis");
+	dev_dbg(this->dev, "Blockmark swapping %s\n",
+		str_enabled_disabled(this->swap_block_mark));
 
 	ret = gpmi_init_last(this);
 	if (ret)
@@ -2578,11 +2567,9 @@ static int gpmi_nfc_exec_op(struct nand_chip *chip,
 	for (i = 0; i < GPMI_MAX_TRANSFERS; i++)
 		this->transfers[i].direction = DMA_NONE;
 
-	ret = pm_runtime_get_sync(this->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(this->dev);
+	ret = pm_runtime_resume_and_get(this->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	/*
 	 * This driver currently supports only one NAND chip. Plus, dies share
@@ -2806,8 +2793,6 @@ static const struct of_device_id gpmi_nand_id_table[] = {
 	{ .compatible = "fsl,imx6qp-gpmi-nand", .data = &gpmi_devdata_imx6qp, },
 	{ .compatible = "fsl,imx6sx-gpmi-nand", .data = &gpmi_devdata_imx6sx, },
 	{ .compatible = "fsl,imx7d-gpmi-nand", .data = &gpmi_devdata_imx7d, },
-	{ .compatible = "fsl,imx6ul-gpmi-nand", .data = &gpmi_devdata_imx6ul, },
-	{ .compatible = "fsl,imx6ull-gpmi-nand", .data = &gpmi_devdata_imx6ull, },
 	{ .compatible = "fsl,imx8qxp-gpmi-nand", .data = &gpmi_devdata_imx8qxp, },
 	{}
 };
@@ -2834,6 +2819,11 @@ static int gpmi_nand_probe(struct platform_device *pdev)
 	pm_runtime_enable(&pdev->dev);
 	pm_runtime_set_autosuspend_delay(&pdev->dev, 500);
 	pm_runtime_use_autosuspend(&pdev->dev);
+#ifndef CONFIG_PM
+	ret = gpmi_enable_clk(this);
+	if (ret)
+		goto exit_acquire_resources;
+#endif
 
 	ret = gpmi_init(this);
 	if (ret)
@@ -2856,23 +2846,24 @@ exit_acquire_resources:
 	return ret;
 }
 
-static int gpmi_nand_remove(struct platform_device *pdev)
+static void gpmi_nand_remove(struct platform_device *pdev)
 {
 	struct gpmi_nand_data *this = platform_get_drvdata(pdev);
 	struct nand_chip *chip = &this->nand;
 	int ret;
-
-	pm_runtime_disable(&pdev->dev);
 
 	ret = mtd_device_unregister(nand_to_mtd(chip));
 	WARN_ON(ret);
 	nand_cleanup(chip);
 	gpmi_free_dma_buffer(this);
 	release_resources(this);
-	return 0;
+	pm_runtime_dont_use_autosuspend(&pdev->dev);
+	pm_runtime_disable(&pdev->dev);
+#ifndef CONFIG_PM
+	gpmi_disable_clk(this);
+#endif
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int gpmi_pm_suspend(struct device *dev)
 {
 	int ret;
@@ -2914,23 +2905,15 @@ static int gpmi_pm_resume(struct device *dev)
 		return ret;
 	}
 
-	/* re-apply the timing setting */
-	this->hw.must_apply_timings = true;
-
 	return 0;
 }
-#endif /* CONFIG_PM_SLEEP */
-
-#define gpmi_enable_clk(x)	__gpmi_enable_clk(x, true)
-#define gpmi_disable_clk(x)	__gpmi_enable_clk(x, false)
 
 static int gpmi_runtime_suspend(struct device *dev)
 {
 	struct gpmi_nand_data *this = dev_get_drvdata(dev);
 
-	gpmi_disable_clk(this);
 	release_bus_freq(BUS_FREQ_HIGH);
-	release_dma_channels(this);
+	gpmi_disable_clk(this);
 
 	return 0;
 }
@@ -2946,27 +2929,23 @@ static int gpmi_runtime_resume(struct device *dev)
 
 	request_bus_freq(BUS_FREQ_HIGH);
 
-	ret = acquire_dma_channels(this);
-	if (ret < 0)
-		return ret;
-
 	return 0;
 
 }
 
 static const struct dev_pm_ops gpmi_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(gpmi_pm_suspend, gpmi_pm_resume)
-	SET_RUNTIME_PM_OPS(gpmi_runtime_suspend, gpmi_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(gpmi_pm_suspend, gpmi_pm_resume)
+	RUNTIME_PM_OPS(gpmi_runtime_suspend, gpmi_runtime_resume, NULL)
 };
 
 static struct platform_driver gpmi_nand_driver = {
 	.driver = {
 		.name = "gpmi-nand",
-		.pm = &gpmi_pm_ops,
+		.pm = pm_ptr(&gpmi_pm_ops),
 		.of_match_table = gpmi_nand_id_table,
 	},
-	.probe   = gpmi_nand_probe,
-	.remove  = gpmi_nand_remove,
+	.probe = gpmi_nand_probe,
+	.remove = gpmi_nand_remove,
 };
 module_platform_driver(gpmi_nand_driver);
 

@@ -9,6 +9,7 @@
 #include <linux/export.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/limits.h>
 #include <linux/slab.h>
 #include <asm/div64.h>
 
@@ -53,11 +54,22 @@
 		.odiv	=	(_odiv),			\
 	}
 
+#define PLL_FRACN_GP_INTEGER(_rate, _mfi, _rdiv, _odiv)		\
+	{							\
+		.rate	=	(_rate),			\
+		.mfi	=	(_mfi),				\
+		.mfn	=	0,				\
+		.mfd	=	0,				\
+		.rdiv	=	(_rdiv),			\
+		.odiv	=	(_odiv),			\
+	}
+
 struct clk_fracn_gppll {
 	struct clk_hw			hw;
 	void __iomem			*base;
 	const struct imx_fracn_gppll_rate_table *rate_table;
 	int rate_count;
+	u32 flags;
 };
 
 /*
@@ -67,20 +79,44 @@ struct clk_fracn_gppll {
  * The Fvco should be in range 2.5Ghz to 5Ghz
  */
 static const struct imx_fracn_gppll_rate_table fracn_tbl[] = {
-	PLL_FRACN_GP(1700000000U, 141, 0, 0, 1, 2),
-	PLL_FRACN_GP(1400000000U, 175, 0, 0, 1, 3),
 	PLL_FRACN_GP(1039500000U, 173, 25, 100, 1, 4),
-	PLL_FRACN_GP(900000000U, 150, 0, 0, 1, 4),
-	PLL_FRACN_GP(800000000U, 200, 0, 0, 1, 6),
 	PLL_FRACN_GP(650000000U, 162, 50, 100, 0, 6),
 	PLL_FRACN_GP(594000000U, 198, 0, 1, 0, 8),
 	PLL_FRACN_GP(560000000U, 140, 0, 1, 0, 6),
+	PLL_FRACN_GP(551250000U, 206, 69, 400, 1, 9),
+	PLL_FRACN_GP(519750000U, 173, 1, 4, 1, 8),
+	PLL_FRACN_GP(519232000U, 129, 101, 125, 1, 6),
 	PLL_FRACN_GP(498000000U, 166, 0, 1, 0, 8),
+	PLL_FRACN_GP(497000000U, 144, 23, 24, 1, 7),
 	PLL_FRACN_GP(484000000U, 121, 0, 1, 0, 6),
+	PLL_FRACN_GP(455000000U, 113, 3, 4, 1, 6),
 	PLL_FRACN_GP(445333333U, 167, 0, 1, 0, 9),
+	PLL_FRACN_GP(445090909U, 204, 0, 1, 1, 11),
 	PLL_FRACN_GP(400000000U, 200, 0, 1, 0, 12),
 	PLL_FRACN_GP(393216000U, 163, 84, 100, 0, 10),
-	PLL_FRACN_GP(300000000U, 150, 0, 1, 0, 12)
+	PLL_FRACN_GP(390000000U, 130, 0, 1, 0, 8),
+	PLL_FRACN_GP(344000000U, 172, 0, 1, 0, 12),
+	PLL_FRACN_GP(340000000U, 170, 0, 1, 0, 12),
+	PLL_FRACN_GP(332600000U, 138, 584, 1000, 0, 10),
+	PLL_FRACN_GP(324000000U, 108, 0, 1, 0, 8),
+	PLL_FRACN_GP(300000000U, 150, 0, 1, 0, 12),
+	PLL_FRACN_GP(256500000U, 106, 7, 8, 1, 10),
+	PLL_FRACN_GP(241900000U, 201, 584, 1000, 0, 20),
+	PLL_FRACN_GP(240000000U, 120, 0, 1, 0, 12),
+	PLL_FRACN_GP(220500000U, 147, 0, 1, 1, 16),
+	PLL_FRACN_GP(198240000U, 107, 19, 50, 1, 13),
+	PLL_FRACN_GP(189189000U, 110, 1441, 4000, 1, 14),
+	PLL_FRACN_GP(189000000U, 126, 0, 1, 1, 16),
+	PLL_FRACN_GP(178285714U, 156, 0, 1, 1, 21),
+	PLL_FRACN_GP(178000000U, 178, 0, 1, 1, 24),
+	PLL_FRACN_GP(176400000U, 147, 0, 1, 1, 20),
+	PLL_FRACN_GP(176225000U, 132, 27, 160, 1, 18),
+	PLL_FRACN_GP(151200000U, 126, 0, 1, 1, 20),
+	PLL_FRACN_GP(151090909U, 138, 1, 2, 1, 22),
+	PLL_FRACN_GP(132000000U, 104, 1, 2, 0, 19),
+	PLL_FRACN_GP(119000000U, 119, 0, 1, 1, 24),
+	PLL_FRACN_GP(88727272U, 110, 10, 11, 1, 30),
+	PLL_FRACN_GP(78800000U, 197, 0, 1, 1, 60),
 };
 
 struct imx_fracn_gppll_clk imx_fracn_gppll = {
@@ -88,6 +124,25 @@ struct imx_fracn_gppll_clk imx_fracn_gppll = {
 	.rate_count = ARRAY_SIZE(fracn_tbl),
 };
 EXPORT_SYMBOL_GPL(imx_fracn_gppll);
+
+/*
+ * Fvco = (Fref / rdiv) * MFI
+ * Fout = Fvco / odiv
+ * The (Fref / rdiv) should be in range 20MHz to 40MHz
+ * The Fvco should be in range 2.5Ghz to 5Ghz
+ */
+static const struct imx_fracn_gppll_rate_table int_tbl[] = {
+	PLL_FRACN_GP_INTEGER(1700000000U, 141, 1, 2),
+	PLL_FRACN_GP_INTEGER(1400000000U, 175, 1, 3),
+	PLL_FRACN_GP_INTEGER(900000000U, 150, 1, 4),
+	PLL_FRACN_GP_INTEGER(800000000U, 200, 1, 6),
+};
+
+struct imx_fracn_gppll_clk imx_fracn_gppll_integer = {
+	.rate_table = int_tbl,
+	.rate_count = ARRAY_SIZE(int_tbl),
+};
+EXPORT_SYMBOL_GPL(imx_fracn_gppll_integer);
 
 static inline struct clk_fracn_gppll *to_clk_fracn_gppll(struct clk_hw *hw)
 {
@@ -107,20 +162,49 @@ imx_get_pll_settings(struct clk_fracn_gppll *pll, unsigned long rate)
 	return NULL;
 }
 
-static long clk_fracn_gppll_round_rate(struct clk_hw *hw, unsigned long rate,
-				       unsigned long *prate)
+static int clk_fracn_gppll_determine_rate(struct clk_hw *hw,
+					  struct clk_rate_request *req)
 {
 	struct clk_fracn_gppll *pll = to_clk_fracn_gppll(hw);
 	const struct imx_fracn_gppll_rate_table *rate_table = pll->rate_table;
 	int i;
 
-	/* Assuming rate_table is in descending order */
-	for (i = 0; i < pll->rate_count; i++)
-		if (rate >= rate_table[i].rate)
-			return rate_table[i].rate;
+	if (pll->rate_count == 0)
+		return -EINVAL;
 
-	/* return minimum supported value */
-	return rate_table[pll->rate_count - 1].rate;
+	if (pll->flags & CLK_FRACN_GPPLL_NEAREST) {
+		unsigned long best_rate = 0;
+		unsigned long lowest_error = ULONG_MAX;
+
+		for (i = 0; i < pll->rate_count; i++) {
+			unsigned long delta;
+
+			if (req->rate > rate_table[i].rate)
+				delta = req->rate - rate_table[i].rate;
+			else
+				delta = rate_table[i].rate - req->rate;
+
+			if (delta < lowest_error) {
+				lowest_error = delta;
+				best_rate = rate_table[i].rate;
+			}
+		}
+
+		req->rate = best_rate;
+	} else {
+		/* Assuming rate_table is in descending order */
+		for (i = 0; i < pll->rate_count; i++) {
+			if (req->rate >= rate_table[i].rate) {
+				req->rate = rate_table[i].rate;
+				return 0;
+			}
+		}
+
+		/* return minimum supported value */
+		req->rate = rate_table[pll->rate_count - 1].rate;
+	}
+
+	return 0;
 }
 
 static unsigned long clk_fracn_gppll_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
@@ -175,9 +259,15 @@ static unsigned long clk_fracn_gppll_recalc_rate(struct clk_hw *hw, unsigned lon
 		break;
 	}
 
-	/* Fvco = Fref * (MFI + MFN / MFD) */
-	fvco = fvco * mfi * mfd + fvco * mfn;
-	do_div(fvco, mfd * rdiv * odiv);
+	if (pll->flags & CLK_FRACN_GPPLL_INTEGER) {
+		/* Fvco = (Fref / rdiv) * MFI */
+		fvco = fvco * mfi;
+		do_div(fvco, rdiv * odiv);
+	} else {
+		/* Fvco = (Fref / rdiv) * (MFI + MFN / MFD) */
+		fvco = fvco * mfi * mfd + fvco * mfn;
+		do_div(fvco, mfd * rdiv * odiv);
+	}
 
 	return (unsigned long)fvco;
 }
@@ -221,8 +311,12 @@ static int clk_fracn_gppll_set_rate(struct clk_hw *hw, unsigned long drate,
 	pll_div = FIELD_PREP(PLL_RDIV_MASK, rate->rdiv) | rate->odiv |
 		FIELD_PREP(PLL_MFI_MASK, rate->mfi);
 	writel_relaxed(pll_div, pll->base + PLL_DIV);
-	writel_relaxed(rate->mfd, pll->base + PLL_DENOMINATOR);
-	writel_relaxed(FIELD_PREP(PLL_MFN_MASK, rate->mfn), pll->base + PLL_NUMERATOR);
+	readl(pll->base + PLL_DIV);
+	if (pll->flags & CLK_FRACN_GPPLL_FRACN) {
+		writel_relaxed(rate->mfd, pll->base + PLL_DENOMINATOR);
+		writel_relaxed(FIELD_PREP(PLL_MFN_MASK, rate->mfn), pll->base + PLL_NUMERATOR);
+		readl(pll->base + PLL_NUMERATOR);
+	}
 
 	/* Wait for 5us according to fracn mode pll doc */
 	udelay(5);
@@ -230,6 +324,7 @@ static int clk_fracn_gppll_set_rate(struct clk_hw *hw, unsigned long drate,
 	/* Enable Powerup */
 	tmp |= POWERUP_MASK;
 	writel_relaxed(tmp, pll->base + PLL_CTRL);
+	readl(pll->base + PLL_CTRL);
 
 	/* Wait Lock */
 	ret = clk_fracn_gppll_wait_lock(pll);
@@ -258,18 +353,23 @@ static int clk_fracn_gppll_prepare(struct clk_hw *hw)
 	if (val & POWERUP_MASK)
 		return 0;
 
+	if (pll->flags & CLK_FRACN_GPPLL_FRACN)
+		writel_relaxed(readl_relaxed(pll->base + PLL_NUMERATOR),
+			       pll->base + PLL_NUMERATOR);
+
 	val |= CLKMUX_BYPASS;
 	writel_relaxed(val, pll->base + PLL_CTRL);
 
 	val |= POWERUP_MASK;
 	writel_relaxed(val, pll->base + PLL_CTRL);
-
-	val |= CLKMUX_EN;
-	writel_relaxed(val, pll->base + PLL_CTRL);
+	readl(pll->base + PLL_CTRL);
 
 	ret = clk_fracn_gppll_wait_lock(pll);
 	if (ret)
 		return ret;
+
+	val |= CLKMUX_EN;
+	writel_relaxed(val, pll->base + PLL_CTRL);
 
 	val &= ~CLKMUX_BYPASS;
 	writel_relaxed(val, pll->base + PLL_CTRL);
@@ -302,12 +402,14 @@ static const struct clk_ops clk_fracn_gppll_ops = {
 	.unprepare	= clk_fracn_gppll_unprepare,
 	.is_prepared	= clk_fracn_gppll_is_prepared,
 	.recalc_rate	= clk_fracn_gppll_recalc_rate,
-	.round_rate	= clk_fracn_gppll_round_rate,
+	.determine_rate = clk_fracn_gppll_determine_rate,
 	.set_rate	= clk_fracn_gppll_set_rate,
 };
 
-struct clk_hw *imx_clk_fracn_gppll(const char *name, const char *parent_name, void __iomem *base,
-				   const struct imx_fracn_gppll_clk *pll_clk)
+static struct clk_hw *_imx_clk_fracn_gppll(const char *name, const char *parent_name,
+					   void __iomem *base,
+					   const struct imx_fracn_gppll_clk *pll_clk,
+					   u32 pll_flags)
 {
 	struct clk_fracn_gppll *pll;
 	struct clk_hw *hw;
@@ -328,6 +430,7 @@ struct clk_hw *imx_clk_fracn_gppll(const char *name, const char *parent_name, vo
 	pll->hw.init = &init;
 	pll->rate_table = pll_clk->rate_table;
 	pll->rate_count = pll_clk->rate_count;
+	pll->flags = pll_flags;
 
 	hw = &pll->hw;
 
@@ -340,4 +443,28 @@ struct clk_hw *imx_clk_fracn_gppll(const char *name, const char *parent_name, vo
 
 	return hw;
 }
+
+struct clk_hw *imx_clk_fracn_gppll(const char *name, const char *parent_name, void __iomem *base,
+				   const struct imx_fracn_gppll_clk *pll_clk)
+{
+	return _imx_clk_fracn_gppll(name, parent_name, base, pll_clk, CLK_FRACN_GPPLL_FRACN);
+}
 EXPORT_SYMBOL_GPL(imx_clk_fracn_gppll);
+
+struct clk_hw *imx_clk_fracn_gppll_integer(const char *name, const char *parent_name,
+					   void __iomem *base,
+					   const struct imx_fracn_gppll_clk *pll_clk)
+{
+	return _imx_clk_fracn_gppll(name, parent_name, base, pll_clk, CLK_FRACN_GPPLL_INTEGER);
+}
+EXPORT_SYMBOL_GPL(imx_clk_fracn_gppll_integer);
+
+struct clk_hw *imx_clk_fracn_gppll_flags(const char *name, const char *parent_name,
+					 void __iomem *base,
+					 const struct imx_fracn_gppll_clk *pll_clk,
+					 unsigned int flags)
+{
+	return _imx_clk_fracn_gppll(name, parent_name, base, pll_clk,
+				    CLK_FRACN_GPPLL_FRACN | flags);
+}
+EXPORT_SYMBOL_GPL(imx_clk_fracn_gppll_flags);

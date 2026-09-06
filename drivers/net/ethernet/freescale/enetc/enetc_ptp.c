@@ -7,8 +7,18 @@
 
 #include "enetc.h"
 
-int enetc_phc_index = -1;
-EXPORT_SYMBOL_GPL(enetc_phc_index);
+static int ptp_enetc_settime(struct ptp_clock_info *ptp, const struct timespec64 *ts)
+{
+	int ret;
+
+	ret = ptp_qoriq_settime(ptp, ts);
+	if (ret)
+		return ret;
+
+	enetc_ptp_clock_update();
+
+	return ret;
+}
 
 static struct ptp_clock_info enetc_ptp_caps = {
 	.owner		= THIS_MODULE,
@@ -22,7 +32,7 @@ static struct ptp_clock_info enetc_ptp_caps = {
 	.adjfine	= ptp_qoriq_adjfine,
 	.adjtime	= ptp_qoriq_adjtime,
 	.gettime64	= ptp_qoriq_gettime,
-	.settime64	= ptp_qoriq_settime,
+	.settime64	= ptp_enetc_settime,
 	.enable		= ptp_qoriq_enable,
 };
 
@@ -92,7 +102,6 @@ static int enetc_ptp_probe(struct pci_dev *pdev,
 	if (err)
 		goto err_no_clock;
 
-	enetc_phc_index = ptp_qoriq->phc_index;
 	pci_set_drvdata(pdev, ptp_qoriq);
 
 	return 0;
@@ -118,7 +127,6 @@ static void enetc_ptp_remove(struct pci_dev *pdev)
 {
 	struct ptp_qoriq *ptp_qoriq = pci_get_drvdata(pdev);
 
-	enetc_phc_index = -1;
 	ptp_qoriq_free(ptp_qoriq);
 	pci_free_irq_vectors(pdev);
 	kfree(ptp_qoriq);

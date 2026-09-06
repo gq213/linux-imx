@@ -10,9 +10,11 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_fb_helper.h>
+#include <drm/drm_fbdev_dma.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_modeset_helper.h>
 #include <drm/drm_print.h>
@@ -31,10 +33,10 @@ DEFINE_DRM_GEM_DMA_FOPS(dcnano_driver_fops);
 static struct drm_driver dcnano_driver = {
 	.driver_features	= DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
 	DRM_GEM_DMA_DRIVER_OPS,
+	DRM_FBDEV_DMA_DRIVER_OPS,
 	.fops			= &dcnano_driver_fops,
 	.name			= "imx-dcnano",
 	.desc			= "i.MX DCNANO DRM graphics",
-	.date			= "20201221",
 	.major			= 1,
 	.minor			= 0,
 	.patchlevel		= 0,
@@ -236,7 +238,7 @@ static int dcnano_probe(struct platform_device *pdev)
 		legacyfb_depth = 32;
 	}
 
-	drm_fbdev_generic_setup(drm, legacyfb_depth);
+	drm_client_setup_with_color_mode(drm, legacyfb_depth);
 
 	return 0;
 
@@ -254,7 +256,7 @@ err_reset_get:
 	return ret;
 }
 
-static int dcnano_remove(struct platform_device *pdev)
+static void dcnano_remove(struct platform_device *pdev)
 {
 	struct dcnano_dev *dcnano = dev_get_drvdata(&pdev->dev);
 	struct drm_device *drm = &dcnano->base;
@@ -270,8 +272,6 @@ static int dcnano_remove(struct platform_device *pdev)
 	pm_runtime_put_sync(drm->dev);
 
 	pm_runtime_disable(drm->dev);
-
-	return 0;
 }
 
 static int __maybe_unused dcnano_suspend(struct device *dev)

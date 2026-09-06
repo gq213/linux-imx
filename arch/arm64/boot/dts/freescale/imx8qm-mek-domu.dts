@@ -35,22 +35,14 @@
 		dpu0 = &dpu1;
 		ldb0 = &ldb1;
 		serial1 = &lpuart1;
-		isi0 = &isi_0;
-		isi1 = &isi_1;
-		isi2 = &isi_2;
-		isi3 = &isi_3;
-		isi4 = &isi_4;
-		isi5 = &isi_5;
-		isi6 = &isi_6;
-		isi7 = &isi_7;
 		csi0 = &mipi_csi_0;
 		csi1 = &mipi_csi_1;
 		mu1 = &lsio_mu1;
 		mu2 = &lsio_mu2;
 		dphy0 = &mipi0_dphy;
 		dphy1 = &mipi1_dphy;
-		mipi_dsi0 = &mipi0_dsi_host;
-		mipi_dsi1 = &mipi1_dsi_host;
+		mipi-dsi0 = &mipi0_dsi_host;
+		mipi-dsi1 = &mipi1_dsi_host;
 	};
 
 	cpus {
@@ -116,7 +108,7 @@
 			reg = <0 0x92400000 0 0x1000000>;
 			no-map;
 		};
-		dsp_reserved_heap: dsp_reserved_heap {
+		dsp_reserved_heap: dsp_reserved_heap@93400000 {
 			reg = <0 0x93400000 0 0xef0000>;
 			no-map;
 		};
@@ -210,6 +202,84 @@
 		        #clock-cells = <0>;
 		        clock-frequency = <24000000>;
 		};
+
+	};
+
+	clk_esai1_rx_clk: clock-esai1-rx {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "esai1_rx_clk";
+	};
+
+	clk_esai1_rx_hf_clk: clock-esai1-rx-hf {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "esai1_rx_hf_clk";
+	};
+
+	clk_esai1_tx_clk: clock-esai1-tx {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "esai1_tx_clk";
+	};
+
+	clk_esai1_tx_hf_clk: clock-esai1-tx-hf {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "esai1_tx_hf_clk";
+	};
+
+	clk_hdmi_rx_mclk: clock-hdmi-rx-mclk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "hdmi-rx-mclk";
+	};
+
+	clk_mlb_clk: clock-mlb-clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "mlb_clk";
+	};
+
+	clk_sai5_rx_bclk: clock-sai5-rx-bclk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "sai5_rx_bclk";
+	};
+
+	clk_sai5_tx_bclk: clock-sai5-tx-bclk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "sai5_tx_bclk";
+	};
+
+	clk_sai6_rx_bclk: clock-sai6-rx-bclk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "sai6_rx_bclk";
+	};
+
+	clk_sai6_tx_bclk: clock-sai6-tx-bclk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "sai6_tx_bclk";
+	};
+
+	clk_spdif1_rx: clock-spdif1-rx {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "spdif1_rx";
 	};
 
 	rtc0: rtc@23000000 {
@@ -218,18 +288,6 @@
 		interrupts = <GIC_SPI 1 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&clk0>;
 		clock-names = "apb_pclk";
-	};
-
-	modem_reset: modem-reset {
-		compatible = "gpio-reset";
-		pinctrl-names = "default", "sleep";
-		pinctrl-0 = <&pinctrl_modem_reset>;
-		pinctrl-1 = <&pinctrl_modem_reset_sleep>;
-		reset-gpios = <&lsio_gpio4 22 GPIO_ACTIVE_LOW>;
-		reset-delay-us = <2000>;
-		reset-post-delay-ms = <40>;
-		#reset-cells = <0>;
-		xen,passthrough;
 	};
 
 	passthrough {
@@ -304,7 +362,7 @@
 			pinctrl-2 = <&pinctrl_wifi>;
 		};
 
-		lvds_backlight0: lvds_backlight@0 {
+		lvds_backlight0: lvds_backlight-0 {
 			compatible = "pwm-backlight";
 			pwms = <&pwm_lvds0 0 100000 0>;
 
@@ -336,7 +394,12 @@
 		xen,passthrough;
 	};
 
-	reg_audio: fixedregulator@2 {
+	scu_reset: reset-controller {
+		compatible = "fsl,imx-scu-reset";
+		#reset-cells = <1>;
+	};
+
+	reg_audio: fixedregulator-audio {
 		compatible = "regulator-fixed";
 		regulator-name = "cs42888_supply";
 		regulator-min-microvolt = <3300000>;
@@ -345,7 +408,7 @@
 		xen,passthrough;
 	};
 
-	epdev_on: fixedregulator@100 {
+	epdev_on: fixedregulator-epdev {
 		compatible = "regulator-fixed";
 		pinctrl-names = "default", "sleep";
 		pinctrl-0 = <&pinctrl_wlreg_on>;
@@ -380,14 +443,14 @@
 		xen,passthrough;
 	};
 
-	xen_i2c0: xen_i2c@0 {
+	xen_i2c0: xen_i2c-0 {
 		compatible = "xen,i2c";
 		be-adapter = "5a800000.i2c";
 		status = "okay";
 		xen,passthrough;
 	};
 
-	xen_i2c1: xen_i2c@1 {
+	xen_i2c1: xen_i2c-1 {
 		compatible = "xen,i2c";
 		be-adapter = "3b230000.i2c";
 		xen,passthrough;
@@ -417,7 +480,7 @@
 		ranges = <0x55000000 0x0 0x55000000 0x1000000>;
 		xen,passthrough;
 
-		dsp: dsp@556e8000 {
+		dsp_556e8: dsp@556e8000 {
 			compatible = "fsl,imx8qm-hifi4";
 			reg = <0x556e8000 0x88000>;
 			clocks = <&clk_dummy>,
@@ -473,7 +536,6 @@
 	#address-cells = <1>;
 	#size-cells = <1>;
 	ranges = <0x5a000000 0x0 0x5a000000 0x1000000>;
-
 
 	edma214: dma-controller@5a2e0000 {
 		compatible = "fsl,imx8qm-edma";
@@ -531,7 +593,7 @@
 	status = "okay";
 
 	lvds-to-hdmi-bridge@4c {
-		compatible = "ite,it6263";
+		compatible = "ite,it6263-nxp";
 		reg = <0x4c>;
 
 		port {
@@ -632,10 +694,6 @@
 	status="okay";
 };
 
-&gpu_3d0 {
-	status = "okay";
-};
-
 &gpu_3d1 {
 	status = "disabled";
 };
@@ -645,7 +703,6 @@
 	reg = <0x80000000 0x80000000>, <0x0 0x10000000>;
 	reg-names = "phys_baseaddr", "contiguous_mem";
 	cores = <&gpu_3d0>;
-	status = "okay";
 };
 
 &iomuxc {
@@ -756,18 +813,6 @@
 			IMX8QM_UART1_TX_DMA_UART1_TX		0x06000020
 			IMX8QM_UART1_CTS_B_DMA_UART1_CTS_B	0x06000020
 			IMX8QM_UART1_RTS_B_DMA_UART1_RTS_B	0x06000020
-		>;
-	};
-
-	pinctrl_modem_reset: modemresetgrp {
-		fsl,pins = <
-			IMX8QM_QSPI1A_DQS_LSIO_GPIO4_IO22		0x06000021
-		>;
-	};
-
-	pinctrl_modem_reset_sleep: modemreset_sleepgrp {
-		fsl,pins = <
-			IMX8QM_QSPI1A_DQS_LSIO_GPIO4_IO22		0x07800021
 		>;
 	};
 
@@ -1018,7 +1063,7 @@
 };
 
 /* Audio */
-&dsp {
+&dsp_556e8 {
 	compatible = "fsl,imx8qm-hifi4";
 	status = "okay";
 };
@@ -1039,8 +1084,8 @@
 			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_PLL>,
 			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_SLV_BUS>,
 			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_MST_BUS>,
-			<&esai0_lpcg 0>;
-	assigned-clock-parents = <&aud_pll_div0_lpcg 0>;
+			<&esai0_lpcg IMX_LPCG_CLK_4>;
+	assigned-clock-parents = <&aud_pll_div0_lpcg IMX_LPCG_CLK_0>;
 	assigned-clock-rates = <0>, <786432000>, <49152000>, <12288000>, <49152000>;
 	fsl,txm-rxs;
 	status = "okay";
@@ -1050,7 +1095,7 @@
 	assigned-clocks = <&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_PLL>,
 			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_SLV_BUS>,
 			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_MST_BUS>,
-			<&sai1_lpcg 0>; /* FIXME: should be sai1, original code is 0 */
+			<&sai1_lpcg IMX_LPCG_CLK_4>; /* FIXME: should be sai1, original code is 0 */
 	assigned-clock-rates = <786432000>, <49152000>, <12288000>, <49152000>;
 	pinctrl-names = "default";
 	/*pinctrl-0 = <&pinctrl_sai1>;*/
@@ -1059,12 +1104,12 @@
 
 &sai6 {
 	assigned-clocks = <&acm IMX_ADMA_ACM_SAI6_MCLK_SEL>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_PLL>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_SLV_BUS>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_MST_BUS>,
-			<&sai6_lpcg 0>;
-	assigned-clock-parents = <&aud_pll_div1_lpcg 0>;
-	assigned-clock-rates = <0>, <786432000>, <98304000>, <12288000>, <98304000>;
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_PLL>,
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_SLV_BUS>,
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_MST_BUS>,
+			<&sai6_lpcg IMX_LPCG_CLK_4>;
+	assigned-clock-parents = <&aud_pll_div0_lpcg IMX_LPCG_CLK_0>;
+	assigned-clock-rates = <0>, <786432000>, <49152000>, <12288000>, <49152000>;
 	fsl,sai-asynchronous;
 	fsl,txm-rxs;
 	status = "disabled";
@@ -1076,12 +1121,12 @@
 };
 &sai7 {
 	assigned-clocks = <&acm IMX_ADMA_ACM_SAI7_MCLK_SEL>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_PLL>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_SLV_BUS>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_MST_BUS>,
-			<&sai7_lpcg 0>;
-	assigned-clock-parents = <&aud_pll_div1_lpcg 0>;
-	assigned-clock-rates = <0>, <786432000>, <98304000>, <12288000>, <98304000>;
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_PLL>,
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_SLV_BUS>,
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_MST_BUS>,
+			<&sai7_lpcg IMX_LPCG_CLK_4>;
+	assigned-clock-parents = <&aud_pll_div0_lpcg IMX_LPCG_CLK_0>;
+	assigned-clock-rates = <0>, <786432000>, <49152000>, <12288000>, <49152000>;
 	fsl,sai-asynchronous;
 	fsl,txm-rxs;
 	status = "disabled";
@@ -1096,7 +1141,7 @@
 	cs42888: cs42888@48 {
 		compatible = "cirrus,cs42888";
 		reg = <0x48>;
-		clocks = <&mclkout0_lpcg 0>;
+		clocks = <&mclkout0_lpcg IMX_LPCG_CLK_0>;
 		clock-names = "mclk";
 		VA-supply = <&reg_audio>;
 		VD-supply = <&reg_audio>;
@@ -1106,7 +1151,7 @@
 		assigned-clocks = <&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_PLL>,
 				<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_SLV_BUS>,
 				<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_MST_BUS>,
-				<&mclkout0_lpcg 0>;
+				<&mclkout0_lpcg IMX_LPCG_CLK_0>;
 		assigned-clock-rates = <786432000>, <49152000>, <12288000>, <12288000>;
 		fsl,txs-rxm;
 		status = "okay";
@@ -1115,12 +1160,12 @@
 
 &sai6 {
 	assigned-clocks = <&acm IMX_ADMA_ACM_SAI6_MCLK_SEL>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_PLL>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_SLV_BUS>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_MST_BUS>,
-			<&sai6_lpcg 0>;
-	assigned-clock-parents = <&aud_pll_div1_lpcg 0>;
-	assigned-clock-rates = <0>, <786432000>, <98304000>, <12288000>, <98304000>;
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_PLL>,
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_SLV_BUS>,
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_MST_BUS>,
+			<&sai6_lpcg IMX_LPCG_CLK_4>;
+	assigned-clock-parents = <&aud_pll_div0_lpcg IMX_LPCG_CLK_0>;
+	assigned-clock-rates = <0>, <786432000>, <49152000>, <12288000>, <49152000>;
 	fsl,sai-asynchronous;
 	fsl,txm-rxs;
 	status = "disabled";
@@ -1128,12 +1173,13 @@
 
 &sai7 {
 	assigned-clocks = <&acm IMX_ADMA_ACM_SAI7_MCLK_SEL>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_PLL>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_SLV_BUS>,
-			<&clk IMX_SC_R_AUDIO_PLL_1 IMX_SC_PM_CLK_MST_BUS>,
-			<&sai7_lpcg 0>;
-	assigned-clock-parents = <&aud_pll_div1_lpcg 0>;
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_PLL>,
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_SLV_BUS>,
+			<&clk IMX_SC_R_AUDIO_PLL_0 IMX_SC_PM_CLK_MST_BUS>,
+			<&sai7_lpcg IMX_LPCG_CLK_4>;
+	assigned-clock-parents = <&aud_pll_div0_lpcg IMX_LPCG_CLK_0>;
 	assigned-clock-rates = <0>, <786432000>, <98304000>, <12288000>, <98304000>;
+	assigned-clock-rates = <0>, <786432000>, <49152000>, <12288000>, <49152000>;
 	fsl,sai-asynchronous;
 	fsl,txm-rxs;
 	status = "disabled";
@@ -1164,7 +1210,6 @@
 &lpuart1 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_lpuart1>;
-	resets = <&modem_reset>;
 	status = "okay";
 	dmas = <&edma214 15 0 0>, <&edma214 14 0 1>;
 };
@@ -1202,9 +1247,6 @@
 	status = "okay";
 
 	adv_bridge0: adv7535@3d {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
 		compatible = "adi,adv7535";
 		reg = <0x3d>;
 		adi,addr-cec = <0x3b>;
@@ -1214,8 +1256,7 @@
 		interrupts = <19 IRQ_TYPE_LEVEL_LOW>;
 		status = "okay";
 
-		port@0 {
-			reg = <0>;
+		port {
 			adv7535_0_in: endpoint {
 				remote-endpoint = <&mipi0_adv_out>;
 			};
@@ -1249,9 +1290,6 @@
 	status = "okay";
 
 	adv_bridge1: adv7535@3d {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
 		compatible = "adi,adv7535";
 		reg = <0x3d>;
 		adi,addr-cec = <0x3b>;
@@ -1261,8 +1299,7 @@
 		interrupts = <23 IRQ_TYPE_LEVEL_LOW>;
 		status = "okay";
 
-		port@0 {
-			reg = <0>;
+		port {
 			adv7535_1_in: endpoint {
 				remote-endpoint = <&mipi1_adv_out>;
 			};
@@ -1287,71 +1324,28 @@
 	};
 };
 
-&isi_0 {
+&isi {
 	status = "okay";
 
-	cap_device {
-		status = "okay";
-	};
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
 
-	m2m_device {
-		status = "okay";
-	};
-};
+		port@2 {
+			reg = <2>;
 
-&isi_1 {
-	status = "okay";
+			isi_in_2: endpoint {
+				remote-endpoint = <&mipi_csi0_out>;
+			};
+		};
 
-	cap_device {
-		status = "okay";
-	};
-};
+		port@3 {
+			reg = <3>;
 
-&isi_2 {
-	status = "okay";
-
-	cap_device {
-		status = "okay";
-	};
-};
-
-&isi_3 {
-	status = "okay";
-
-	cap_device {
-		status = "okay";
-	};
-};
-
-&isi_4 {
-	status = "okay";
-
-	cap_device {
-		status = "okay";
-	};
-};
-
-&isi_5 {
-	status = "okay";
-
-	cap_device {
-		status = "okay";
-	};
-};
-
-&isi_6 {
-	status = "okay";
-
-	cap_device {
-		status = "okay";
-	};
-};
-
-&isi_7 {
-	status = "okay";
-
-	cap_device {
-		status = "okay";
+			isi_in_3: endpoint {
+				remote-endpoint = <&mipi_csi1_out>;
+			};
+		};
 	};
 };
 
@@ -1369,12 +1363,23 @@
 	virtual-channel;
 	status = "okay";
 
-	/* Camera 0  MIPI CSI-2 (CSIS0) */
-	port@0 {
-		reg = <0>;
-		mipi_csi0_ep: endpoint {
-			remote-endpoint = <&max9286_0_ep>;
-			data-lanes = <1 2 3 4>;
+	ports {
+		/* Camera 0  MIPI CSI-2 (CSIS0) */
+		port@0 {
+			reg = <0>;
+
+			mipi_csi0_ep: endpoint {
+				remote-endpoint = <&max9286_0_ep>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+
+			mipi_csi0_out: endpoint {
+				remote-endpoint = <&isi_in_2>;
+			};
 		};
 	};
 };
@@ -1385,12 +1390,21 @@
 	virtual-channel;
 	status = "okay";
 
-	/* Camera 1  MIPI CSI-2 (CSIS1) */
-	port@1 {
-		reg = <1>;
-		mipi_csi1_ep: endpoint {
-			remote-endpoint = <&max9286_1_ep>;
-			data-lanes = <1 2 3 4>;
+	ports {
+		/* Camera 1  MIPI CSI-2 (CSIS1) */
+		port@0 {
+			mipi_csi1_ep: endpoint {
+				remote-endpoint = <&max9286_1_ep>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+
+			mipi_csi1_out: endpoint {
+				remote-endpoint = <&isi_in_3>;
+			};
 		};
 	};
 };

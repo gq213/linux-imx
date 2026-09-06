@@ -30,9 +30,21 @@
 			reg = <0x56223000 0x4>;
 			#clock-cells = <1>;
 			clocks = <&dsi_ipg_clk>;
-			bit-offset = <0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi0_lis_lpcg_ipg_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_0>;
+		};
+
+		mipi0_pwm_lpcg: clock-controller@5622300c {
+			compatible = "fsl,imx8qxp-lpcg";
+			reg = <0x5622300c 0x4>;
+			#clock-cells = <1>;
+			clocks = <&clk IMX_SC_R_MIPI_0_PWM_0 IMX_SC_PM_CLK_PER>,
+				 <&dsi_ipg_clk>;
+			clock-indices = <IMX_LPCG_CLK_0>, <IMX_LPCG_CLK_4>;
+			clock-output-names = "mipi0_pwm_lpcg_clk",
+					     "mipi0_pwm_lpcg_ipg_clk";
+			power-domains = <&pd IMX_SC_R_MIPI_0_PWM_0>;
 		};
 
 		mipi0_i2c0_lpcg_clk: clock-controller@5622301c {
@@ -40,7 +52,7 @@
 			reg = <0x5622301c 0x4>;
 			#clock-cells = <1>;
 			clocks = <&clk IMX_SC_R_MIPI_0_I2C_0 IMX_SC_PM_CLK_MISC2>;
-			bit-offset = <0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi0_i2c0_lpcg_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_0_I2C_0>;
 		};
@@ -50,7 +62,7 @@
 			reg = <0x56223018 0x4>;
 			#clock-cells = <1>;
 			clocks = <&dsi_ipg_clk>;
-			bit-offset = <0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi0_i2c0_lpcg_ipg_s_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_0_I2C_0>;
 		};
@@ -59,8 +71,8 @@
 			compatible = "fsl,imx8qxp-lpcg";
 			reg = <0x56223014 0x4>;
 			#clock-cells = <1>;
-			clocks = <&mipi0_i2c0_lpcg_ipg_s_clk 0>;
-			bit-offset = <0>;
+			clocks = <&mipi0_i2c0_lpcg_ipg_s_clk IMX_LPCG_CLK_0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi0_i2c0_lpcg_ipg_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_0_I2C_0>;
 		};
@@ -70,7 +82,7 @@
 			reg = <0x5622302c 0x4>;
 			#clock-cells = <1>;
 			clocks = <&clk IMX_SC_R_MIPI_0_I2C_1 IMX_SC_PM_CLK_MISC2>;
-			bit-offset = <0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi0_i2c1_lpcg_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_0_I2C_1>;
 		};
@@ -80,7 +92,7 @@
 			reg = <0x56223028 0x4>;
 			#clock-cells = <1>;
 			clocks = <&dsi_ipg_clk>;
-			bit-offset = <0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi0_i2c1_lpcg_ipg_s_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_0_I2C_1>;
 		};
@@ -89,8 +101,8 @@
 			compatible = "fsl,imx8qxp-lpcg";
 			reg = <0x56223024 0x4>;
 			#clock-cells = <1>;
-			clocks = <&mipi0_i2c1_lpcg_ipg_s_clk 0>;
-			bit-offset = <0>;
+			clocks = <&mipi0_i2c1_lpcg_ipg_s_clk IMX_LPCG_CLK_0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi0_i2c1_lpcg_ipg_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_0_I2C_1>;
 		};
@@ -104,9 +116,22 @@
 			#interrupt-cells = <1>;
 			fsl,channel = <0>;
 			fsl,num-irqs = <32>;
-			clocks = <&mipi0_lis_lpcg 0>;
+			clocks = <&mipi0_lis_lpcg IMX_LPCG_CLK_0>;
 			clock-names = "ipg";
 			power-domains = <&pd IMX_SC_R_MIPI_0>;
+		};
+
+		pwm_mipi0: pwm@56224000 {
+			compatible = "fsl,imx8qm-pwm", "fsl,imx27-pwm";
+			reg = <0x56224000 0x1000>;
+			clocks = <&mipi0_pwm_lpcg IMX_LPCG_CLK_0>,
+				 <&mipi0_pwm_lpcg IMX_LPCG_CLK_4>;
+			clock-names = "per", "ipg";
+			assigned-clocks = <&clk IMX_SC_R_MIPI_0_PWM_0 IMX_SC_PM_CLK_PER>;
+			assigned-clock-rates = <24000000>;
+			#pwm-cells = <2>;
+			power-domains = <&pd IMX_SC_R_MIPI_0_PWM_0>;
+			status = "disabled";
 		};
 
 		i2c0_mipi0: i2c@56226000 {
@@ -116,10 +141,10 @@
 			reg = <0x56226000 0x1000>;
 			interrupts = <8>;
 			interrupt-parent = <&irqsteer_mipi0>;
-			clocks = <&mipi0_i2c0_lpcg_clk 0>,
-				 <&mipi0_i2c0_lpcg_ipg_clk 0>;
+			clocks = <&mipi0_i2c0_lpcg_clk IMX_LPCG_CLK_0>,
+				 <&mipi0_i2c0_lpcg_ipg_clk IMX_LPCG_CLK_0>;
 			clock-names = "per", "ipg";
-			assigned-clocks = <&mipi0_i2c0_lpcg_clk 0>;
+			assigned-clocks = <&mipi0_i2c0_lpcg_clk IMX_LPCG_CLK_0>;
 			assigned-clock-rates = <24000000>;
 			power-domains = <&pd IMX_SC_R_MIPI_0_I2C_0>;
 			status = "disabled";
@@ -141,8 +166,6 @@
 		};
 
 		mipi0_dsi_host: dsi_host@56228000 {
-			#address-cells = <1>;
-			#size-cells = <0>;
 			compatible = "fsl,imx8qm-nwl-dsi";
 			reg = <0x56228000 0x300>;
 			clocks = <&clk IMX_SC_R_MIPI_0 IMX_SC_PM_CLK_PER>,
@@ -157,6 +180,10 @@
 				      "tx_esc",
 				      "rx_esc",
 				      "phy_parent";
+			assigned-clocks = <&clk IMX_SC_R_MIPI_0 IMX_SC_PM_CLK_PHY>,
+					  <&clk IMX_SC_R_MIPI_0 IMX_SC_PM_CLK_PER>;
+			assigned-clock-parents = <&clk IMX_SC_R_MIPI_0 IMX_SC_PM_CLK_BYPASS>,
+						 <&clk IMX_SC_R_MIPI_0 IMX_SC_PM_CLK_BYPASS>;
 			interrupts = <16>;
 			interrupt-parent = <&irqsteer_mipi0>;
 			power-domains = <&pd IMX_SC_R_MIPI_0>;
@@ -171,12 +198,8 @@
 				#size-cells = <0>;
 
 				mipi0_in: port@0 {
-					#address-cells = <1>;
-					#size-cells = <0>;
-
 					reg = <0>;
-					mipi0_dsi_in: endpoint@0 {
-						reg = <0>;
+					mipi0_dsi_in: endpoint {
 						remote-endpoint = <&dpu1_disp0_mipi0>;
 					};
 				};
@@ -195,9 +218,21 @@
 			reg = <0x57223000 0x4>;
 			#clock-cells = <1>;
 			clocks = <&dsi_ipg_clk>;
-			bit-offset = <0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi1_lis_lpcg_ipg_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_1>;
+		};
+
+		mipi1_pwm_lpcg: clock-controller@5722300c {
+			compatible = "fsl,imx8qxp-lpcg";
+			reg = <0x5722300c 0x4>;
+			#clock-cells = <1>;
+			clocks = <&clk IMX_SC_R_MIPI_1_PWM_0 IMX_SC_PM_CLK_PER>,
+				 <&dsi_ipg_clk>;
+			clock-indices = <IMX_LPCG_CLK_0>, <IMX_LPCG_CLK_4>;
+			clock-output-names = "mipi1_pwm_lpcg_clk",
+					     "mipi1_pwm_lpcg_ipg_clk";
+			power-domains = <&pd IMX_SC_R_MIPI_1_PWM_0>;
 		};
 
 		mipi1_i2c0_lpcg_clk: clock-controller@5722301c {
@@ -205,7 +240,7 @@
 			reg = <0x5722301c 0x4>;
 			#clock-cells = <1>;
 			clocks = <&clk IMX_SC_R_MIPI_1_I2C_0 IMX_SC_PM_CLK_MISC2>;
-			bit-offset = <0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi1_i2c0_lpcg_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_1_I2C_0>;
 		};
@@ -215,7 +250,7 @@
 			reg = <0x57223018 0x4>;
 			#clock-cells = <1>;
 			clocks = <&dsi_ipg_clk>;
-			bit-offset = <0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi1_i2c0_lpcg_ipg_s_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_1_I2C_0>;
 		};
@@ -224,8 +259,8 @@
 			compatible = "fsl,imx8qxp-lpcg";
 			reg = <0x57223014 0x4>;
 			#clock-cells = <1>;
-			clocks = <&mipi1_i2c0_lpcg_ipg_s_clk 0>;
-			bit-offset = <0>;
+			clocks = <&mipi1_i2c0_lpcg_ipg_s_clk IMX_LPCG_CLK_0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi1_i2c0_lpcg_ipg_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_1_I2C_0>;
 		};
@@ -235,7 +270,7 @@
 			reg = <0x5722302c 0x4>;
 			#clock-cells = <1>;
 			clocks = <&clk IMX_SC_R_MIPI_1_I2C_1 IMX_SC_PM_CLK_MISC2>;
-			bit-offset = <0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi1_i2c1_lpcg_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_1_I2C_1>;
 		};
@@ -245,7 +280,7 @@
 			reg = <0x57223028 0x4>;
 			#clock-cells = <1>;
 			clocks = <&dsi_ipg_clk>;
-			bit-offset = <0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi1_i2c1_lpcg_ipg_s_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_1_I2C_1>;
 		};
@@ -254,8 +289,8 @@
 			compatible = "fsl,imx8qxp-lpcg";
 			reg = <0x57223024 0x4>;
 			#clock-cells = <1>;
-			clocks = <&mipi1_i2c1_lpcg_ipg_s_clk 0>;
-			bit-offset = <0>;
+			clocks = <&mipi1_i2c1_lpcg_ipg_s_clk IMX_LPCG_CLK_0>;
+			clock-indices = <IMX_LPCG_CLK_0>;
 			clock-output-names = "mipi1_i2c1_lpcg_ipg_clk";
 			power-domains = <&pd IMX_SC_R_MIPI_1_I2C_1>;
 		};
@@ -269,9 +304,22 @@
 			#interrupt-cells = <1>;
 			fsl,channel = <0>;
 			fsl,num-irqs = <32>;
-			clocks = <&mipi1_lis_lpcg 0>;
+			clocks = <&mipi1_lis_lpcg IMX_LPCG_CLK_0>;
 			clock-names = "ipg";
 			power-domains = <&pd IMX_SC_R_MIPI_1>;
+		};
+
+		pwm_mipi1: pwm@57224000 {
+			compatible = "fsl,imx8qm-pwm", "fsl,imx27-pwm";
+			reg = <0x57224000 0x1000>;
+			clocks = <&mipi1_pwm_lpcg IMX_LPCG_CLK_0>,
+				 <&mipi1_pwm_lpcg IMX_LPCG_CLK_4>;
+			clock-names = "per", "ipg";
+			assigned-clocks = <&clk IMX_SC_R_MIPI_1_PWM_0 IMX_SC_PM_CLK_PER>;
+			assigned-clock-rates = <24000000>;
+			#pwm-cells = <2>;
+			power-domains = <&pd IMX_SC_R_MIPI_1_PWM_0>;
+			status = "disabled";
 		};
 
 		i2c0_mipi1: i2c@57226000 {
@@ -281,10 +329,10 @@
 			reg = <0x57226000 0x1000>;
 			interrupts = <8>;
 			interrupt-parent = <&irqsteer_mipi1>;
-			clocks = <&mipi1_i2c0_lpcg_clk 0>,
-				 <&mipi1_i2c0_lpcg_ipg_clk 0>;
+			clocks = <&mipi1_i2c0_lpcg_clk IMX_LPCG_CLK_0>,
+				 <&mipi1_i2c0_lpcg_ipg_clk IMX_LPCG_CLK_0>;
 			clock-names = "per", "ipg";
-			assigned-clocks = <&mipi1_i2c0_lpcg_clk 0>;
+			assigned-clocks = <&mipi1_i2c0_lpcg_clk IMX_LPCG_CLK_0>;
 			assigned-clock-rates = <24000000>;
 			power-domains = <&pd IMX_SC_R_MIPI_1_I2C_0>;
 			status = "disabled";
@@ -306,8 +354,6 @@
 		};
 
 		mipi1_dsi_host: dsi_host@57228000 {
-			#address-cells = <1>;
-			#size-cells = <0>;
 			compatible = "fsl,imx8qm-nwl-dsi";
 			reg = <0x57228000 0x300>;
 			clocks = <&clk IMX_SC_R_MIPI_1 IMX_SC_PM_CLK_PER>,
@@ -322,6 +368,10 @@
 				      "tx_esc",
 				      "rx_esc",
 				      "phy_parent";
+			assigned-clocks = <&clk IMX_SC_R_MIPI_1 IMX_SC_PM_CLK_PHY>,
+					  <&clk IMX_SC_R_MIPI_1 IMX_SC_PM_CLK_PER>;
+			assigned-clock-parents = <&clk IMX_SC_R_MIPI_1 IMX_SC_PM_CLK_BYPASS>,
+						 <&clk IMX_SC_R_MIPI_1 IMX_SC_PM_CLK_BYPASS>;
 			interrupts = <16>;
 			interrupt-parent = <&irqsteer_mipi1>;
 			power-domains = <&pd IMX_SC_R_MIPI_1>;
@@ -336,12 +386,8 @@
 				#size-cells = <0>;
 
 				mipi1_in: port@0 {
-					#address-cells = <1>;
-					#size-cells = <0>;
-
 					reg = <0>;
-					mipi1_dsi_in: endpoint@0 {
-						reg = <0>;
+					mipi1_dsi_in: endpoint {
 						remote-endpoint = <&dpu2_disp0_mipi1>;
 					};
 				};

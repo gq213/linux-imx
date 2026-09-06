@@ -58,8 +58,6 @@ extern unsigned int ddr_normal_rate;
 extern void mx6_lpddr2_freq_change(u32 freq, int bus_freq_mode);
 extern void imx6_up_lpddr2_freq_change(u32 freq, int bus_freq_mode);
 extern void imx6sll_lpddr2_freq_change(u32 freq, int bus_freq_mode);
-extern unsigned long save_ttbr1(void);
-extern void restore_ttbr1(unsigned long ttbr1);
 extern void mx6q_lpddr2_freq_change(u32 freq, void *ddr_settings);
 extern unsigned long ddr_freq_change_iram_base;
 extern unsigned long imx6_lpddr2_freq_change_start asm("imx6_lpddr2_freq_change_start");
@@ -196,7 +194,7 @@ int update_lpddr2_freq_smp(int ddr_rate)
 
 	printk(KERN_DEBUG "Bus freq set to %d start...\n", ddr_rate);
 
-	for (i=0; i < mmdc_settings_size; i++) {
+	for (i = 0; i < mmdc_settings_size; i++) {
 		iram_mmdc_settings[i][0] = mmdc_settings[i][0];
 		iram_mmdc_settings[i][1] = mmdc_settings[i][1];
 	}
@@ -348,7 +346,7 @@ int init_mmdc_lpddr2_settings_mx6q(struct platform_device *busfreq_pdev)
 	/* Stoange_iram_basee the variable used to communicate between cores in
 	 * a non-cacheable IRAM area */
 	wait_for_lpddr2_freq_update = (u32 *)ddr_freq_change_iram_base;
-	wfe_code_size = (&wfe_smp_freq_change_end - &wfe_smp_freq_change_start) *4;
+	wfe_code_size = (&wfe_smp_freq_change_end - &wfe_smp_freq_change_start) * 4;
 
 	wfe_change_lpddr2_freq = (void *)fncpy((void *)ddr_freq_change_iram_base + 0x8,
 			&wfe_smp_freq_change, wfe_code_size);
@@ -364,7 +362,7 @@ int init_mmdc_lpddr2_settings_mx6q(struct platform_device *busfreq_pdev)
 			&mx6q_lpddr2_freq_change, ddr_code_size);
 
 	/* save initial mmdc boot timing settings */
-	for (i=0; i < mmdc_settings_size; i++)
+	for (i = 0; i < mmdc_settings_size; i++)
 		mmdc_settings[i][1] = readl_relaxed(mmdc_base +
 				mmdc_settings[i][0]);
 

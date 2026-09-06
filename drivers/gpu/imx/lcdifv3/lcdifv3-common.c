@@ -9,8 +9,10 @@
 #include <linux/media-bus-format.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/of_graph.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -501,16 +503,6 @@ void lcdifv3_disable_controller(struct lcdifv3_soc *lcdifv3)
 }
 EXPORT_SYMBOL(lcdifv3_disable_controller);
 
-long lcdifv3_pix_clk_round_rate(struct lcdifv3_soc *lcdifv3,
-				unsigned long rate)
-{
-	if (unlikely(!rate))
-		return -EINVAL;
-
-	return clk_round_rate(lcdifv3->clk_pix, rate);
-}
-EXPORT_SYMBOL(lcdifv3_pix_clk_round_rate);
-
 static int platform_remove_device_fn(struct device *dev, void *data)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -701,11 +693,9 @@ static int imx_lcdifv3_probe(struct platform_device *pdev)
 	return lcdifv3_add_client_devices(lcdifv3);
 }
 
-static int imx_lcdifv3_remove(struct platform_device *pdev)
+static void imx_lcdifv3_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

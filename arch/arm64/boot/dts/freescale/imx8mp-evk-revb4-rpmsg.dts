@@ -9,18 +9,22 @@
 
 &rpmsg_audio {
 	model = "wm8962-audio";
+	audio-codec = <&wm8962>;
 	audio-routing =
-		"IN1R", "MICBIAS",
-		"IN1L", "MICBIAS";
-	fsl,lpa-widgets =
-		"HPOUTL", "HPOUTR", "Playback",
-		"Capture", "IN1L", "IN1R";
+		"Headphone Jack", "HPOUTL",
+		"Headphone Jack", "HPOUTR",
+		"Ext Spk", "SPKOUTL",
+		"Ext Spk", "SPKOUTR",
+		"Main MIC", "MICBIAS",
+		"IN3R", "Main MIC",
+		"IN1R", "Main MIC";
+	ignore-suspend-widgets =
+		"Headphone Jack", "Playback",
+		"Capture", "Main MIC";
 };
 
 &i2c_rpbus_3 {
-	/delete-node/ wm8960@1a;
-
-	codec: wm8962@1a {
+	wm8962: codec@1a {
 		compatible = "wlf,wm8962";
 		reg = <0x1a>;
 		DCVDD-supply = <&reg_audio_pwr>;

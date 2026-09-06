@@ -9,8 +9,6 @@
 #include <linux/list.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
-#include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include "vpu.h"
 #include "vpu_mbox.h"
@@ -110,8 +108,4 @@ void vpu_mbox_send_msg(struct vpu_core *core, u32 type, u32 data)
 {
 	mbox_send_message(core->tx_data.ch, &data);
 	mbox_send_message(core->tx_type.ch, &type);
-}
-
-void vpu_mbox_enable_rx(struct vpu_dev *dev)
-{
 }

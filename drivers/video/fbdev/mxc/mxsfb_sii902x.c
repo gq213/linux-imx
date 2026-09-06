@@ -26,6 +26,7 @@
 /*!
  * Include files
  */
+#include <linux/lcd.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/console.h>
@@ -43,6 +44,7 @@
 #include <asm/mach-types.h>
 #include <video/mxc_edid.h>
 
+#include "../core/fb_internal.h"
 #include "mxsfb_sii902x.h"
 
 #define DRV_NAME "sii902x"
@@ -260,6 +262,10 @@ static void sii902x_cable_connected(void)
 
 			mode = fb_find_nearest_mode(&m,
 					&sii902x.fbi->modelist);
+			if (!mode) {
+				dev_err(&sii902x.client->dev, "could not find mode\n");
+				return;
+			}
 
 			/* update fbi mode  */
 			sii902x.fbi->mode = (struct fb_videomode *)mode;
@@ -350,18 +356,6 @@ static int sii902x_fb_event(struct notifier_block *nb, unsigned long val, void *
 		fb_show_logo(fbi, 0);
 
 		break;
-	case FB_EVENT_MODE_CHANGE:
-		sii902x_setup(fbi);
-		break;
-	case FB_EVENT_BLANK:
-		if (*((int *)event->data) == FB_BLANK_UNBLANK) {
-			dev_dbg(&sii902x.client->dev, "FB_BLANK_UNBLANK\n");
-			sii902x_poweron();
-		} else {
-			dev_dbg(&sii902x.client->dev, "FB_BLANK_BLANK\n");
-			sii902x_poweroff();
-		}
-		break;
 	}
 	return 0;
 }
@@ -393,12 +387,55 @@ static int mxsfb_get_of_property(void)
 	return ret;
 }
 
-static int sii902x_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int sii902x_lcd_set_power(struct lcd_device *lcd, int power)
+{
+	struct sii902x_data *sii902x = lcd_get_data(lcd);
+
+	if (power == LCD_POWER_ON) {
+		dev_dbg(&sii902x->client->dev, "FB_BLANK_UNBLANK\n");
+		sii902x_poweron();
+	} else {
+		dev_dbg(&sii902x->client->dev, "FB_BLANK_BLANK\n");
+		sii902x_poweroff();
+	}
+
+	return 0;
+}
+
+static int sii902x_lcd_set_mode(struct lcd_device *lcd, u32 xres, u32 yres)
+{
+	struct sii902x_data *sii902x = lcd_get_data(lcd);
+
+	sii902x_setup(sii902x->fbi);
+
+	return 0;
+}
+
+static bool sii902x_lcd_controls_device(struct lcd_device *lcd,
+					struct device *display_device,
+					struct fb_info *fbi)
+{
+	struct sii902x_data *sii902x = lcd_get_data(lcd);
+
+	/* Ignore if driver did not probe yet */
+	if (sii902x_in_init_state)
+		return false;
+
+	return sii902x->fbi == fbi;
+}
+
+static const struct lcd_ops sii902x_lcd_ops = {
+	.set_power = sii902x_lcd_set_power,
+	.set_mode = sii902x_lcd_set_mode,
+	.controls_device = sii902x_lcd_controls_device,
+};
+
+static int sii902x_probe(struct i2c_client *client)
 {
 	int i, dat, ret;
 	struct fb_info edid_fbi;
 	struct fb_info *init_fbi = sii902x.fbi;
+	struct lcd_device *lcd;
 
 	memset(&sii902x, 0, sizeof(sii902x));
 
@@ -452,9 +489,10 @@ static int sii902x_probe(struct i2c_client *client,
 	}
 
 	if (sii902x.client->irq) {
-		ret = request_irq(sii902x.client->irq, sii902x_detect_handler,
-				IRQF_TRIGGER_FALLING,
-				"SII902x_det", &sii902x);
+		ret = devm_request_irq(&sii902x.client->dev, sii902x.client->irq,
+				       sii902x_detect_handler,
+				       IRQF_TRIGGER_FALLING,
+				       "SII902x_det", &sii902x);
 		if (ret < 0)
 			dev_warn(&sii902x.client->dev,
 				"Sii902x: cound not request det irq %d\n",
@@ -486,6 +524,15 @@ static int sii902x_probe(struct i2c_client *client,
 
 		/* Manually trigger a plugin/plugout interrupter to check cable state */
 		schedule_delayed_work(&(sii902x.det_work), msecs_to_jiffies(50));
+	}
+
+	lcd = devm_lcd_device_register(&sii902x.client->dev, "sii902x-lcd",
+				       &sii902x.client->dev, &sii902x,
+				       &sii902x_lcd_ops);
+	if (IS_ERR(lcd)) {
+		ret = PTR_ERR(lcd);
+		dev_err(&sii902x.client->dev, "failed to register lcd device: %d", ret);
+		return ret;
 	}
 
 	sii902x_in_init_state = 0;

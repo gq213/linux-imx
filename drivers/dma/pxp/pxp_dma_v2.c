@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2010-2016 Freescale Semiconductor, Inc.
- * Copyright 2017-2019 NXP
+ * Copyright 2017-2025 NXP
  */
 /*
  * Based on STMP378X PxP driver
@@ -359,8 +359,6 @@ static void pxp_set_ctrl(struct pxps *pxp)
 	__raw_writel(ctrl, pxp->base + HW_PXP_OUT_CTRL);
 
 	ctrl = 0;
-	if (proc_data->scaling)
-		;
 	if (proc_data->vflip)
 		ctrl |= BM_PXP_CTRL_VFLIP;
 	if (proc_data->hflip)
@@ -1127,7 +1125,7 @@ static inline void clkoff_callback(struct work_struct *w)
 
 static void pxp_clkoff_timer(struct timer_list *t)
 {
-	struct pxps *pxp = from_timer(pxp, t, clk_timer);
+	struct pxps *pxp = timer_container_of(pxp, t, clk_timer);
 
 	if ((pxp->pxp_ongoing == 0) && list_empty(&head))
 		schedule_work(&pxp->work);
@@ -1759,7 +1757,7 @@ exit:
 	return err;
 }
 
-static int pxp_remove(struct platform_device *pdev)
+static void pxp_remove(struct platform_device *pdev)
 {
 	struct pxps *pxp = platform_get_drvdata(pdev);
 
@@ -1767,15 +1765,13 @@ static int pxp_remove(struct platform_device *pdev)
 	kmem_cache_destroy(tx_desc_cache);
 	kthread_stop(pxp->dispatch);
 	cancel_work_sync(&pxp->work);
-	del_timer_sync(&pxp->clk_timer);
+	timer_delete_sync(&pxp->clk_timer);
 	clk_disable_unprepare(pxp->clk);
 	if (pxp->clk_disp_axi)
 		clk_disable_unprepare(pxp->clk_disp_axi);
 	device_remove_file(&pdev->dev, &dev_attr_clk_off_timeout);
 	device_remove_file(&pdev->dev, &dev_attr_block_size);
 	dma_async_device_unregister(&(pxp->pxp_dma.dma));
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

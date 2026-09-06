@@ -276,13 +276,13 @@ static int imx8mp_hdmimix_setup(struct imx_hdmi *hdmi)
 	return 0;
 }
 
-void imx8mp_hdmi_enable_audio(struct dw_hdmi *dw_hdmi, int channel,
-			      int width, int rate, int non_pcm)
+static void imx8mp_hdmi_enable_audio(struct dw_hdmi *dw_hdmi, int channel,
+				     int width, int rate, int non_pcm)
 {
 	imx8mp_hdmi_pai_enable(channel, width, rate, non_pcm);
 }
 
-void imx8mp_hdmi_disable_audio(struct dw_hdmi *dw_hdmi)
+static void imx8mp_hdmi_disable_audio(struct dw_hdmi *dw_hdmi)
 {
 	imx8mp_hdmi_pai_disable();
 }
@@ -412,12 +412,19 @@ static int dw_hdmi_imx_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int dw_hdmi_imx_remove(struct platform_device *pdev)
+static void dw_hdmi_imx_remove(struct platform_device *pdev)
 {
 	struct imx_hdmi *hdmi = platform_get_drvdata(pdev);
 
 	component_del(&pdev->dev, &dw_hdmi_imx_ops);
 	dw_hdmi_remove(hdmi->hdmi);
+}
+
+static int __maybe_unused dw_hdmi_imx_suspend(struct device *dev)
+{
+	struct imx_hdmi *hdmi = dev_get_drvdata(dev);
+
+	dw_hdmi_suspend(hdmi->hdmi);
 
 	return 0;
 }
@@ -432,7 +439,7 @@ static int __maybe_unused dw_hdmi_imx_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops dw_hdmi_imx_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(NULL, dw_hdmi_imx_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(dw_hdmi_imx_suspend, dw_hdmi_imx_resume)
 };
 
 static struct platform_driver dw_hdmi_imx_platform_driver = {

@@ -19,13 +19,15 @@ description: |
 
 properties:
   compatible:
-    description:
-      These chips are compatible with each other, just have different IDs.
-    enum:
-      - nxp,fxls8962af
-      - nxp,fxls8964af
-      - nxp,fxls8967af
-      - nxp,fxls8974cf
+    oneOf:
+      - enum:
+          - nxp,fxls8962af
+          - nxp,fxls8964af
+      - items:
+          - enum:
+              - nxp,fxls8967af
+              - nxp,fxls8974cf
+          - const: nxp,fxls8962af
 
   reg:
     maxItems: 1
@@ -44,6 +46,11 @@ properties:
   drive-open-drain:
     type: boolean
 
+  wakeup-source:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description:
+      Enable wake on accelerometer event
+
 required:
   - compatible
   - reg
@@ -56,7 +63,7 @@ unevaluatedProperties: false
 examples:
   - |
     #include <dt-bindings/interrupt-controller/irq.h>
-    i2c0 {
+    i2c {
         #address-cells = <1>;
         #size-cells = <0>;
 
@@ -67,11 +74,12 @@ examples:
             interrupt-parent = <&gpio0>;
             interrupts = <0 IRQ_TYPE_LEVEL_HIGH>;
             interrupt-names = "INT1";
+            wakeup-source;
         };
     };
   - |
     #include <dt-bindings/interrupt-controller/irq.h>
-    spi0 {
+    spi {
         #address-cells = <1>;
         #size-cells = <0>;
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright 2019 NXP
+ * Copyright 2019,2023 NXP
  */
 
 #include <linux/slab.h>
@@ -15,6 +15,7 @@
 #include <linux/module.h>
 #include <linux/notifier.h>
 #include <linux/of_device.h>
+#include <linux/of_address.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/virtio_config.h>
@@ -163,8 +164,12 @@ static struct virtqueue *rp_find_vq(struct virtio_device *vdev,
 		return ERR_PTR(-ENOMEM);
 
 	/* ioremap'ing normal memory, so we cast away sparse's complaints */
-	rpvq->addr = (__force void *) ioremap(virdev->vring[index],
-							RPMSG_RING_SIZE);
+	if (of_dma_is_coherent(dev->of_node))
+		rpvq->addr = (__force void *)ioremap_cache(virdev->vring[index],
+							   RPMSG_RING_SIZE);
+	else
+		rpvq->addr = (__force void *)ioremap(virdev->vring[index],
+						     RPMSG_RING_SIZE);
 	if (!rpvq->addr) {
 		err = -ENOMEM;
 		goto free_rpvq;
@@ -217,12 +222,11 @@ static void imx_rpmsg_del_vqs(struct virtio_device *vdev)
 
 static int imx_rpmsg_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		       struct virtqueue *vqs[],
-		       vq_callback_t *callbacks[],
-		       const char * const names[],
-		       const bool *ctx,
+		       struct virtqueue_info vqs_info[],
 		       struct irq_affinity *desc)
 {
 	struct imx_virdev *virdev = to_imx_virdev(vdev);
+	struct virtqueue_info *vqi;
 	int i, err;
 
 	/* we maintain two virtqueues per remote processor (for RX and TX) */
@@ -230,8 +234,9 @@ static int imx_rpmsg_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		return -EINVAL;
 
 	for (i = 0; i < nvqs; ++i) {
-		vqs[i] = rp_find_vq(vdev, i, callbacks[i], names[i],
-				ctx ? ctx[i] : false);
+		vqi = &vqs_info[i];
+		vqs[i] = rp_find_vq(vdev, i, vqi->callback, vqi->name,
+				    vqi->ctx);
 		if (IS_ERR(vqs[i])) {
 			err = PTR_ERR(vqs[i]);
 			goto error;
@@ -366,7 +371,7 @@ static void rpmsg_work_handler(struct work_struct *work)
 }
 
 #ifdef CONFIG_IMX_SCU
-void imx_rpmsg_restore(struct imx_rpmsg_vproc *rpdev)
+static void imx_rpmsg_restore(struct imx_rpmsg_vproc *rpdev)
 {
 	int i;
 	int vdev_nums = rpdev->vdev_nums;
@@ -466,6 +471,13 @@ static int imx_rpmsg_rxdb_channel_init(struct imx_rpmsg_vproc *rpdev)
 	return ret;
 }
 
+static int imx_rpmsg_rxdb_channel_deinit(struct imx_rpmsg_vproc *rpdev)
+{
+	mbox_free_channel(rpdev->rxdb_ch);
+
+	return 0;
+}
+
 static void imx_rpmsg_rx_callback(struct mbox_client *c, void *msg)
 {
 	int buf_space;
@@ -529,6 +541,14 @@ err_out:
 		mbox_free_channel(rpdev->rx_ch);
 
 	return ret;
+}
+
+static int imx_rpmsg_xtr_channel_deinit(struct imx_rpmsg_vproc *rpdev)
+{
+	mbox_free_channel(rpdev->tx_ch);
+	mbox_free_channel(rpdev->rx_ch);
+
+	return 0;
 }
 
 static int imx_rpmsg_probe(struct platform_device *pdev)
@@ -653,6 +673,34 @@ err_chl:
 	return ret;
 }
 
+static void imx_rpmsg_remove(struct platform_device *pdev)
+{
+	struct imx_rpmsg_vproc *rpdev = platform_get_drvdata(pdev);
+	struct device *dev = &pdev->dev;
+	int i;
+
+#ifdef CONFIG_IMX_SCU
+	if (rpdev->variant == IMX8QXP || rpdev->variant == IMX8QM) {
+		imx_scu_irq_unregister_notifier(&rpdev->proc_nb);
+		imx_scu_irq_group_enable(IMX_SC_IRQ_GROUP_REBOOTED,
+					BIT(rpdev->mub_partition), false);
+	}
+#endif
+	imx_rpmsg_rxdb_channel_deinit(rpdev);
+
+	for (i = 0; i < rpdev->vdev_nums; i++) {
+		unregister_virtio_device(&rpdev->ivdev[i]->vdev);
+		kfree(rpdev->ivdev[i]);
+	}
+
+	if (rpdev->flags & SPECIFIC_DMA_POOL)
+		of_reserved_mem_device_release(dev);
+
+	imx_rpmsg_xtr_channel_deinit(rpdev);
+
+	cancel_delayed_work_sync(&rpdev->rpmsg_work);
+}
+
 static struct platform_driver imx_rpmsg_driver = {
 	.driver = {
 		   .owner = THIS_MODULE,
@@ -660,6 +708,7 @@ static struct platform_driver imx_rpmsg_driver = {
 		   .of_match_table = imx_rpmsg_dt_ids,
 		   },
 	.probe = imx_rpmsg_probe,
+	.remove = imx_rpmsg_remove,
 };
 
 static int __init imx_rpmsg_init(void)

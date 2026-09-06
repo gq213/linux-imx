@@ -606,7 +606,7 @@ static void dpu_irq_handle(struct irq_desc *desc, enum dpu_irq irq)
 	status &= dpu_cm_read(dpu, USERINTERRUPTENABLE(ofs, irq / 32));
 
 	if (status & BIT(irq % 32)) {
-		virq = irq_linear_revmap(dpu->domain, irq);
+		virq = irq_find_mapping(dpu->domain, irq);
 		if (virq)
 			generic_handle_irq(virq);
 	}
@@ -639,7 +639,7 @@ DPU_IRQ_HANDLER_DEFINE(comctrl_sw3, COMCTRL_SW3);
 
 int dpu_map_irq(struct dpu_soc *dpu, int irq)
 {
-	int virq = irq_linear_revmap(dpu->domain, irq);
+	int virq = irq_find_mapping(dpu->domain, irq);
 
 	if (!virq)
 		virq = irq_create_mapping(dpu->domain, irq);
@@ -824,7 +824,7 @@ irq_set_chained_handler_and_data(dpu->irq_##name, NULL, NULL)
 	DPU_IRQ_CHIP_PM_PUT(comctrl_sw3);
 
 	for (i = 0; i < dpu->irq_line_num; i++) {
-		irq = irq_linear_revmap(dpu->domain, i);
+		irq = irq_find_mapping(dpu->domain, i);
 		if (irq)
 			irq_dispose_mapping(irq);
 	}
@@ -1304,7 +1304,7 @@ failed_irq:
 	return ret;
 }
 
-static int dpu_remove(struct platform_device *pdev)
+static void dpu_remove(struct platform_device *pdev)
 {
 	struct dpu_soc *dpu = platform_get_drvdata(pdev);
 
@@ -1312,8 +1312,6 @@ static int dpu_remove(struct platform_device *pdev)
 
 	dpu_irq_exit(dpu);
 	dpu_detach_pm_domains(dpu);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

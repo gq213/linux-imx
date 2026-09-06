@@ -29,7 +29,6 @@
 #include <linux/delay.h>
 #include <linux/mxcfb.h>
 #include <linux/of_device.h>
-#include <media/v4l2-chip-ident.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-device.h>
 #include "v4l2-int-device.h"
@@ -529,7 +528,6 @@ static int verify_preview(cam_data *cam, struct v4l2_window *win)
 	unsigned int ipu_ch = CHAN_NONE;
 	struct fb_info *bg_fbi = NULL, *fbi = NULL;
 	bool foregound_fb = false;
-	mm_segment_t old_fs;
 
 	pr_debug("In MVC: verify_preview\n");
 
@@ -546,11 +544,8 @@ static int verify_preview(cam_data *cam, struct v4l2_window *win)
 		    ((strncmp(fbi->fix.id, "DISP4 BG", 8) == 0) &&
 					(cam->output >= 3))) {
 			if (fbi->fbops->fb_ioctl) {
-				old_fs = get_fs();
-				set_fs(KERNEL_DS);
 				fbi->fbops->fb_ioctl(fbi, MXCFB_GET_FB_IPU_CHAN,
 						(unsigned long)&ipu_ch);
-				set_fs(old_fs);
 			}
 			if (ipu_ch == MEM_BG_SYNC) {
 				bg_fbi = fbi;
@@ -1694,6 +1689,9 @@ static int mxc_v4l_open(struct file *file)
 		vidioc_int_s_power(cam->sensor, 1);
 		vidioc_int_init(cam->sensor);
 		vidioc_int_dev_init(cam->sensor);
+
+		v4l2_fh_init(&cam->fh, video_devdata(file));
+		v4l2_fh_add(&cam->fh, file);
 	}
 
 	file->private_data = dev;
@@ -1770,6 +1768,9 @@ static int mxc_v4l_close(struct file *file)
 
 		mxc_free_frame_buf(cam);
 		file->private_data = NULL;
+
+		v4l2_fh_del(&cam->fh, file);
+		v4l2_fh_exit(&cam->fh);
 
 		/* capture off */
 		wake_up_interruptible(&cam->enc_queue);
@@ -2382,18 +2383,6 @@ static long mxc_v4l_do_ioctl(struct file *file,
 		}
 		break;
 	}
-	case VIDIOC_DBG_G_CHIP_IDENT: {
-		struct v4l2_dbg_chip_ident *p = arg;
-		p->ident = V4L2_IDENT_NONE;
-		p->revision = 0;
-		if (cam->sensor)
-			retval = vidioc_int_g_chip_ident(cam->sensor, (int *)p);
-		else {
-			pr_err("ERROR: v4l2 capture: slave not found!\n");
-			retval = -ENODEV;
-		}
-		break;
-	}
 	case VIDIOC_TRY_FMT:
 	case VIDIOC_QUERYCTRL:
 	case VIDIOC_G_TUNER:
@@ -2458,7 +2447,7 @@ static int mxc_mmap(struct file *file, struct vm_area_struct *vma)
 		goto mxc_mmap_exit;
 	}
 
-	vma->vm_flags &= ~VM_IO;	/* using shared anonymous pages */
+	vm_flags_clear(vma, VM_IO);	/* using shared anonymous pages */
 
 mxc_mmap_exit:
 	up(&cam->busy_lock);
@@ -2848,13 +2837,13 @@ static int mxc_v4l2_probe(struct platform_device *pdev)
  *
  * @return  The function returns 0 on success and -1 on failure.
  */
-static int mxc_v4l2_remove(struct platform_device *pdev)
+static void mxc_v4l2_remove(struct platform_device *pdev)
 {
 	cam_data *cam = (cam_data *)platform_get_drvdata(pdev);
 	if (cam->open_count) {
 		pr_err("ERROR: v4l2 capture:camera open "
 			"-- setting ops to NULL\n");
-		return -EBUSY;
+		return;
 	} else {
 		struct v4l2_device *v4l2_dev = cam->video_dev->v4l2_dev;
 		device_remove_file(&cam->video_dev->dev,
@@ -2876,7 +2865,6 @@ static int mxc_v4l2_remove(struct platform_device *pdev)
 	}
 
 	pr_info("V4L2 unregistering video\n");
-	return 0;
 }
 
 /*!

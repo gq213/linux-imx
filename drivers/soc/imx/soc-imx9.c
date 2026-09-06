@@ -1,34 +1,29 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright 2022 NXP
+ * Copyright 2024 NXP
  */
 
+#include <linux/arm-smccc.h>
+#include <linux/init.h>
 #include <linux/module.h>
-#include <linux/nvmem-consumer.h>
-#include <linux/kernel.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/sys_soc.h>
 
-#define DEVICE_ID		0x800
-#define DIGPROG_MAJOR_UPPER(x)	(((x) & 0x00f00000) >> 20)
-#define DIGPROG_MAJOR_LOWER(x)	(((x) & 0x0000f000) >> 12)
-#define BASE_LAYER_REV(x)	(((x) & 0x000000f0) >> 4)
+#define IMX_SIP_GET_SOC_INFO	0xc2000006
+#define SOC_ID(x)		(((x) & 0xFF) ? ((x) & 0xFFFF) >> 4 : ((x) & 0xFFFF) >> 8)
+#define SOC_REV_MAJOR(x)	((((x) >> 28) & 0xF) - 0x9)
+#define SOC_REV_MINOR(x)	(((x) >> 24) & 0xF)
 
-static int imx9_soc_device_register(struct device *dev)
+static int imx9_soc_probe(struct platform_device *pdev)
 {
 	struct soc_device_attribute *attr;
-	struct device_node *anaosc_np;
+	struct arm_smccc_res res;
 	struct soc_device *sdev;
-	void __iomem *anaosc;
-	u32 device_id;
-	u32 v[4];
+	u32 soc_id, rev_major, rev_minor;
+	u64 uid127_64, uid63_0;
 	int err;
-	struct nvmem_cell *cell;
-	void *buf;
-	size_t len;
 
 	attr = kzalloc(sizeof(*attr), GFP_KERNEL);
 	if (!attr)
@@ -36,70 +31,53 @@ static int imx9_soc_device_register(struct device *dev)
 
 	err = of_property_read_string(of_root, "model", &attr->machine);
 	if (err) {
-		err = -EINVAL;
+		pr_err("%s: missing model property: %d\n", __func__, err);
 		goto attr;
 	}
 
 	attr->family = kasprintf(GFP_KERNEL, "Freescale i.MX");
 
-	anaosc_np = of_find_compatible_node(NULL, NULL, "fsl,imx93-anatop");
-	if (!anaosc_np) {
-		err = -ENOENT;
+	/*
+	 * Retrieve the soc id, rev & uid info:
+	 * res.a1[31:16]: soc revision;
+	 * res.a1[15:0]: soc id;
+	 * res.a2: uid[127:64];
+	 * res.a3: uid[63:0];
+	 */
+	arm_smccc_smc(IMX_SIP_GET_SOC_INFO, 0, 0, 0, 0, 0, 0, 0, &res);
+	if (res.a0 != SMCCC_RET_SUCCESS) {
+		pr_err("%s: SMC failed: 0x%lx\n", __func__, res.a0);
+		err = -EINVAL;
 		goto family;
 	}
-	anaosc = of_iomap(anaosc_np, 0);
-	WARN_ON(!anaosc);
 
-	device_id = readl(anaosc + DEVICE_ID);
+	soc_id = SOC_ID(res.a1);
+	rev_major = SOC_REV_MAJOR(res.a1);
+	rev_minor = SOC_REV_MINOR(res.a1);
 
-	iounmap(anaosc);
-	of_node_put(anaosc_np);
+	attr->soc_id = kasprintf(GFP_KERNEL, "i.MX%2x", soc_id);
+	attr->revision = kasprintf(GFP_KERNEL, "%d.%d", rev_major, rev_minor);
 
-	if (BASE_LAYER_REV(device_id) == 0x1) {
-		attr->revision = kasprintf(GFP_KERNEL, "1.0");
-	} else {
-		attr->revision = kasprintf(GFP_KERNEL, "unknown" );
-	}
+	uid127_64 = res.a2;
+	uid63_0 = res.a3;
+	attr->serial_number = kasprintf(GFP_KERNEL, "%016llx%016llx", uid127_64, uid63_0);
 
-	cell = nvmem_cell_get(dev, "soc_unique_id");
-	if (IS_ERR(cell)) {
-		err = PTR_ERR(cell);
-		goto revision;
-	}
-
-	buf = nvmem_cell_read(cell, &len);
-	if (IS_ERR(buf)) {
-		nvmem_cell_put(cell);
-		err = PTR_ERR(buf);
-		goto revision;
-	}
-	nvmem_cell_put(cell);
-
-	memcpy(v, buf, min(len, sizeof(v)));
-	attr->serial_number = kasprintf(GFP_KERNEL, "%08x%08x%08x%08x", v[0], v[1], v[2], v[3]);
-
-	if (DIGPROG_MAJOR_UPPER(device_id) == 0x9 && DIGPROG_MAJOR_LOWER(device_id) == 0x2) {
-		attr->soc_id = kasprintf(GFP_KERNEL, "i.MX93");
-	} else {
-		attr->soc_id = kasprintf(GFP_KERNEL, "unknown");
-	}
-
-	if(of_machine_is_compatible("fsl,imx91p"))
+	if (of_machine_is_compatible("fsl,imx91p"))
 		attr->soc_id = kasprintf(GFP_KERNEL, "i.MX91P");
 
 	sdev = soc_device_register(attr);
 	if (IS_ERR(sdev)) {
-		err = -ENODEV;
-		goto soc_id;
+		err = PTR_ERR(sdev);
+		pr_err("%s failed to register SoC as a device: %d\n", __func__, err);
+		goto serial_number;
 	}
 
 	return 0;
 
-soc_id:
-	kfree(attr->soc_id);
+serial_number:
 	kfree(attr->serial_number);
-revision:
 	kfree(attr->revision);
+	kfree(attr->soc_id);
 family:
 	kfree(attr->family);
 attr:
@@ -107,32 +85,50 @@ attr:
 	return err;
 }
 
-static int imx9_init_soc_probe(struct platform_device *pdev)
-{
-        int ret;
-
-	ret = imx9_soc_device_register(&pdev->dev);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret, "failed to register SoC device\n");
-
-        return ret;
-}
-
-static const struct of_device_id imx9_soc_of_match[] = {
-        { .compatible = "fsl,imx93-soc", },
-        { }
+static __maybe_unused const struct of_device_id imx9_soc_match[] = {
+	{ .compatible = "fsl,imx91", },
+	{ .compatible = "fsl,imx93", },
+	{ .compatible = "fsl,imx94", },
+	{ .compatible = "fsl,imx95", },
+	{ .compatible = "fsl,imx952", },
+	{ }
 };
-MODULE_DEVICE_TABLE(of, imx9_soc_of_match);
 
-static struct platform_driver imx9_init_soc_driver = {
+#define IMX_SOC_DRIVER	"imx9-soc"
+
+static struct platform_driver imx9_soc_driver = {
+	.probe = imx9_soc_probe,
 	.driver = {
-		.name           = "imx9_init_soc",
-		.of_match_table = of_match_ptr(imx9_soc_of_match),
+		.name = IMX_SOC_DRIVER,
 	},
-        .probe = imx9_init_soc_probe,
 };
-module_platform_driver(imx9_init_soc_driver);
+
+static int __init imx9_soc_init(void)
+{
+	int ret;
+	struct platform_device *pdev;
+
+	/* No match means it is not an i.MX 9 series SoC, do nothing. */
+	if (!of_match_node(imx9_soc_match, of_root))
+		return 0;
+
+	ret = platform_driver_register(&imx9_soc_driver);
+	if (ret) {
+		pr_err("failed to register imx9_soc platform driver: %d\n", ret);
+		return ret;
+	}
+
+	pdev = platform_device_register_simple(IMX_SOC_DRIVER, -1, NULL, 0);
+	if (IS_ERR(pdev)) {
+		pr_err("failed to register imx9_soc platform device: %ld\n", PTR_ERR(pdev));
+		platform_driver_unregister(&imx9_soc_driver);
+		return PTR_ERR(pdev);
+	}
+
+	return 0;
+}
+device_initcall(imx9_soc_init);
 
 MODULE_AUTHOR("NXP");
 MODULE_DESCRIPTION("NXP i.MX9 SoC");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

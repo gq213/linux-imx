@@ -239,6 +239,8 @@ handler:							;\
 
 /* =====================================================[ exceptions] === */
 
+	__REF
+
 /* ---[ 0x100: RESET exception ]----------------------------------------- */
 
 EXCEPTION_ENTRY(_tng_kernel_start)
@@ -712,6 +714,10 @@ _syscall_check_trace_leave:
  * interrupts that set NEED_RESCHED or SIGNALPENDING... really true? */
 
 _syscall_check_work:
+#ifdef CONFIG_DEBUG_RSEQ
+	l.jal	rseq_syscall
+	 l.ori	r3,r1,0
+#endif
 	/* Here we need to disable interrupts */
 	DISABLE_INTERRUPTS(r27,r29)
 	TRACE_IRQS_OFF
@@ -842,9 +848,17 @@ _syscall_badsys:
 
 /******* END SYSCALL HANDLING *******/
 
-/* ---[ 0xd00: Trap exception ]------------------------------------------ */
+/* ---[ 0xd00: Floating Point exception ]-------------------------------- */
 
-UNHANDLED_EXCEPTION(_vector_0xd00,0xd00)
+EXCEPTION_ENTRY(_fpe_trap_handler)
+	CLEAR_LWA_FLAG(r3)
+
+	/* r4: EA of fault (set by EXCEPTION_HANDLE) */
+	l.jal   do_fpe_trap
+	 l.addi  r3,r1,0 /* pt_regs */
+
+	l.j     _ret_from_exception
+	 l.nop
 
 /* ---[ 0xe00: Trap exception ]------------------------------------------ */
 

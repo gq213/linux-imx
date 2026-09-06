@@ -10,7 +10,6 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
-#include <linux/msi.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -26,11 +25,6 @@
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Freescale Semiconductor, Inc");
 MODULE_DESCRIPTION("DPIO Driver");
-
-#define PROT_NORMAL_NS		(PTE_TYPE_PAGE | PTE_AF | PTE_PXN | PTE_UXN | PTE_DIRTY | PTE_WRITE | PTE_ATTRINDX(MT_NORMAL))
-
-#define ioremap_cache_ns(addr, size)	ioremap_prot((addr), (size), PROT_NORMAL_NS)
-
 
 struct dpio_priv {
 	struct dpaa2_io *io;
@@ -207,7 +201,7 @@ static int dpaa2_dpio_probe(struct fsl_mc_device *dpio_dev)
 		 * achieve the best performance.
 		 */
 		desc.regs_cena = ioremap_cache_ns(dpio_dev->regions[0].start,
-						resource_size(&dpio_dev->regions[0]));
+						  resource_size(&dpio_dev->regions[0]));
 	} else {
 		desc.regs_cena = devm_memremap(dev, dpio_dev->regions[2].start,
 					resource_size(&dpio_dev->regions[2]),
@@ -274,7 +268,7 @@ static void dpio_teardown_irqs(struct fsl_mc_device *dpio_dev)
 	fsl_mc_free_irqs(dpio_dev);
 }
 
-static int dpaa2_dpio_remove(struct fsl_mc_device *dpio_dev)
+static void dpaa2_dpio_remove(struct fsl_mc_device *dpio_dev)
 {
 	struct device *dev;
 	struct dpio_priv *priv;
@@ -301,14 +295,8 @@ static int dpaa2_dpio_remove(struct fsl_mc_device *dpio_dev)
 
 	dpio_close(dpio_dev->mc_io, 0, dpio_dev->mc_handle);
 
-	fsl_mc_portal_free(dpio_dev->mc_io);
-
-	return 0;
-
 err_open:
 	fsl_mc_portal_free(dpio_dev->mc_io);
-
-	return err;
 }
 
 static const struct fsl_mc_device_id dpaa2_dpio_match_id_table[] = {

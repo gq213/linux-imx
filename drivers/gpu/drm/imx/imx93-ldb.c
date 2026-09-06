@@ -9,6 +9,7 @@
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/phy/phy.h>
+#include <linux/platform_device.h>
 
 #include <drm/bridge/fsl_imx_ldb.h>
 #include <drm/drm_atomic_helper.h>
@@ -29,10 +30,9 @@
 struct imx93_ldb;
 
 struct imx93_ldb_channel {
-	struct ldb_channel base;
+	struct ldb_channel *base;
 	struct imx93_ldb *imx93_ldb;
 
-	struct drm_connector connector;
 	struct drm_encoder encoder;
 
 	struct phy *phy;
@@ -40,12 +40,6 @@ struct imx93_ldb_channel {
 
 	u32 bus_flags;
 };
-
-static inline struct imx93_ldb_channel *
-con_to_imx93_ldb_ch(struct drm_connector *c)
-{
-	return container_of(c, struct imx93_ldb_channel, connector);
-}
 
 static inline struct imx93_ldb_channel *
 enc_to_imx93_ldb_ch(struct drm_encoder *e)
@@ -58,14 +52,6 @@ struct imx93_ldb {
 	struct imx93_ldb_channel channel;
 	struct clk *clk_root;
 };
-
-static struct drm_encoder *
-imx93_ldb_connector_best_encoder(struct drm_connector *connector)
-{
-	struct imx93_ldb_channel *imx93_ldb_ch = con_to_imx93_ldb_ch(connector);
-
-	return &imx93_ldb_ch->encoder;
-}
 
 static void imx93_ldb_encoder_enable(struct drm_encoder *encoder)
 {
@@ -114,7 +100,7 @@ imx93_ldb_encoder_atomic_check(struct drm_encoder *encoder,
 {
 	struct imx_crtc_state *imx_crtc_state = to_imx_crtc_state(crtc_state);
 	struct imx93_ldb_channel *imx93_ldb_ch = enc_to_imx93_ldb_ch(encoder);
-	struct ldb_channel *ldb_ch = &imx93_ldb_ch->base;
+	struct ldb_channel *ldb_ch = imx93_ldb_ch->base;
 	struct drm_bridge_state *bridge_state = NULL;
 	struct drm_bridge *bridge;
 
@@ -152,7 +138,7 @@ drm_mode_status imx93_ldb_mode_valid(struct drm_encoder *encoder,
 	if (mode->clock > 80000)
 		return MODE_CLOCK_HIGH;
 
-	if (imx93_ldb_ch->base.panel)
+	if (imx93_ldb_ch->base->panel)
 		return MODE_OK;
 
 	serial_rate = mode->clock * 7000UL;
@@ -163,19 +149,6 @@ drm_mode_status imx93_ldb_mode_valid(struct drm_encoder *encoder,
 	return MODE_BAD;
 }
 
-static const struct drm_connector_funcs imx93_ldb_connector_funcs = {
-	.fill_modes = drm_helper_probe_single_connector_modes,
-	.destroy = imx_drm_connector_destroy,
-	.reset = drm_atomic_helper_connector_reset,
-	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
-	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
-};
-
-static const struct drm_connector_helper_funcs
-imx93_ldb_connector_helper_funcs = {
-	.best_encoder = imx93_ldb_connector_best_encoder,
-};
-
 static const struct drm_encoder_helper_funcs imx93_ldb_encoder_helper_funcs = {
 	.atomic_mode_set = imx93_ldb_encoder_atomic_mode_set,
 	.enable = imx93_ldb_encoder_enable,
@@ -185,7 +158,7 @@ static const struct drm_encoder_helper_funcs imx93_ldb_encoder_helper_funcs = {
 };
 
 static const struct of_device_id imx93_ldb_dt_ids[] = {
-	{ .compatible = "fsl,imx93-ldb", },
+	{ .compatible = "fsl,imx93-ldb-nxp", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, imx93_ldb_dt_ids);
@@ -199,7 +172,7 @@ imx93_ldb_bind(struct device *dev, struct device *master, void *data)
 	struct imx93_ldb *imx93_ldb = dev_get_drvdata(dev);
 	struct ldb *ldb = &imx93_ldb->base;
 	struct imx93_ldb_channel *imx93_ldb_ch = &imx93_ldb->channel;
-	struct ldb_channel *ldb_ch = &imx93_ldb_ch->base;
+	struct ldb_channel *ldb_ch = imx93_ldb_ch->base;
 	struct drm_encoder *encoder[1];
 	int ret;
 	int i;
@@ -306,6 +279,7 @@ static const struct component_ops imx93_ldb_ops = {
 
 static int imx93_ldb_probe(struct platform_device *pdev)
 {
+	struct imx93_ldb_channel *imx93_ldb_ch;
 	struct device *dev = &pdev->dev;
 	struct imx93_ldb *imx93_ldb;
 
@@ -313,15 +287,20 @@ static int imx93_ldb_probe(struct platform_device *pdev)
 	if (!imx93_ldb)
 		return -ENOMEM;
 
+	imx93_ldb_ch = &imx93_ldb->channel;
+
+	imx93_ldb_ch->base = devm_ldb_channel_alloc(dev);
+	if (IS_ERR(imx93_ldb_ch->base))
+		return PTR_ERR(imx93_ldb_ch->base);
+
 	dev_set_drvdata(dev, imx93_ldb);
 
 	return component_add(dev, &imx93_ldb_ops);
 }
 
-static int imx93_ldb_remove(struct platform_device *pdev)
+static void imx93_ldb_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &imx93_ldb_ops);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

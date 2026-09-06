@@ -63,13 +63,6 @@ enum usb_otg_state {
 	OTG_STATE_A_VBUS_ERR,
 };
 
-/* The usb role of phy to be working with */
-enum usb_current_mode {
-	CUR_USB_MODE_NONE,
-	CUR_USB_MODE_HOST,
-	CUR_USB_MODE_DEVICE,
-};
-
 struct usb_phy;
 struct usb_otg;
 
@@ -168,9 +161,6 @@ struct usb_phy {
 	int	(*notify_resume)(struct usb_phy *x,
 			enum usb_device_speed speed);
 
-	int	(*set_mode)(struct usb_phy *x,
-			enum usb_current_mode mode);
-
 };
 
 /* for board-specific init logic */
@@ -229,15 +219,6 @@ usb_phy_vbus_off(struct usb_phy *x)
 	return x->set_vbus(x, false);
 }
 
-static inline int
-usb_phy_set_mode(struct usb_phy *x, enum usb_current_mode mode)
-{
-	if (!x || !x->set_mode)
-		return 0;
-
-	return x->set_mode(x, mode);
-}
-
 /* for usb host and peripheral controller drivers */
 #if IS_ENABLED(CONFIG_USB_PHY)
 extern struct usb_phy *usb_get_phy(enum usb_phy_type type);
@@ -248,7 +229,6 @@ extern struct usb_phy *devm_usb_get_phy_by_phandle(struct device *dev,
 extern struct usb_phy *devm_usb_get_phy_by_node(struct device *dev,
 	struct device_node *node, struct notifier_block *nb);
 extern void usb_put_phy(struct usb_phy *);
-extern void devm_usb_put_phy(struct device *dev, struct usb_phy *x);
 extern void usb_phy_set_event(struct usb_phy *x, unsigned long event);
 extern void usb_phy_set_charger_current(struct usb_phy *usb_phy,
 					unsigned int mA);
@@ -281,10 +261,6 @@ static inline struct usb_phy *devm_usb_get_phy_by_node(struct device *dev,
 }
 
 static inline void usb_put_phy(struct usb_phy *x)
-{
-}
-
-static inline void devm_usb_put_phy(struct device *dev, struct usb_phy *x)
 {
 }
 

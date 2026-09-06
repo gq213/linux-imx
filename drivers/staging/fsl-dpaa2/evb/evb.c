@@ -375,7 +375,8 @@ static inline int evb_port_fdb_prep(struct nlattr *tb[],
 
 static int evb_port_fdb_add(struct ndmsg *ndm, struct nlattr *tb[],
 			    struct net_device *netdev,
-			    const unsigned char *addr, u16 vid, u16 flags,
+			    const unsigned char *addr,
+			    u16 vid, u16 flags, bool *notified,
 			    struct netlink_ext_ack *extack)
 {
 	u16 _vid;
@@ -417,7 +418,7 @@ static int evb_port_fdb_add(struct ndmsg *ndm, struct nlattr *tb[],
 static int evb_port_fdb_del(struct ndmsg *ndm, struct nlattr *tb[],
 			    struct net_device *netdev,
 			    const unsigned char *addr, u16 vid,
-			    struct netlink_ext_ack *extack)
+			    bool *notified, struct netlink_ext_ack *extack)
 {
 	u16 _vid;
 	int err;
@@ -702,7 +703,7 @@ static int evb_getlink(struct sk_buff *skb, u32 pid, u32 seq,
 	hdr->ifi_family = AF_BRIDGE;
 	hdr->ifi_type = netdev->type;
 	hdr->ifi_index = netdev->ifindex;
-	hdr->ifi_flags = dev_get_flags(netdev);
+	hdr->ifi_flags = netif_get_flags(netdev);
 
 	err = __nla_put_netdev(skb, netdev);
 	if (unlikely(err))
@@ -764,8 +765,8 @@ static int evb_dellink(struct net_device *netdev,
 	return 0;
 }
 
-void evb_port_get_stats(struct net_device *netdev,
-			struct rtnl_link_stats64 *storage)
+static void evb_port_get_stats(struct net_device *netdev,
+			       struct rtnl_link_stats64 *storage)
 {
 	struct evb_port_priv	*port_priv = netdev_priv(netdev);
 	u64			tmp;
@@ -866,20 +867,20 @@ static void evb_get_drvinfo(struct net_device *netdev,
 	u16 version_major, version_minor;
 	int err;
 
-	strlcpy(drvinfo->driver, KBUILD_MODNAME, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, evb_drv_version, sizeof(drvinfo->version));
+	strscpy(drvinfo->driver, KBUILD_MODNAME, sizeof(drvinfo->driver));
+	strscpy(drvinfo->version, evb_drv_version, sizeof(drvinfo->version));
 
 	err = dpdmux_get_api_version(port_priv->evb_priv->mc_io, 0,
 				     &version_major,
 				     &version_minor);
 	if (err)
-		strlcpy(drvinfo->fw_version, "N/A",
+		strscpy(drvinfo->fw_version, "N/A",
 			sizeof(drvinfo->fw_version));
 	else
 		snprintf(drvinfo->fw_version, sizeof(drvinfo->fw_version),
 			 "%u.%u", version_major, version_minor);
 
-	strlcpy(drvinfo->bus_info, dev_name(netdev->dev.parent->parent),
+	strscpy(drvinfo->bus_info, dev_name(netdev->dev.parent->parent),
 		sizeof(drvinfo->bus_info));
 }
 
@@ -1153,7 +1154,7 @@ err_exit:
 	return err;
 }
 
-static int evb_remove(struct fsl_mc_device *evb_dev)
+static void evb_remove(struct fsl_mc_device *evb_dev)
 {
 	struct device		*dev = &evb_dev->dev;
 	struct net_device	*netdev = dev_get_drvdata(dev);
@@ -1181,8 +1182,6 @@ static int evb_remove(struct fsl_mc_device *evb_dev)
 
 	dev_set_drvdata(dev, NULL);
 	free_netdev(netdev);
-
-	return 0;
 }
 
 static int evb_probe(struct fsl_mc_device *evb_dev)
@@ -1289,7 +1288,7 @@ static int evb_probe(struct fsl_mc_device *evb_dev)
 				goto err_takedown;
 			}
 			rtmsg_ifinfo(RTM_NEWLINK, port_netdev,
-				     IFF_SLAVE, GFP_KERNEL);
+				     IFF_SLAVE, GFP_KERNEL, 0, NULL);
 			rtnl_unlock();
 
 			list_add(&port_priv->list, &priv->port_list);

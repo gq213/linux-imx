@@ -9,7 +9,6 @@
 #include <linux/i2c-mux.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/regmap.h>
 
@@ -109,7 +108,7 @@ static int max96789_i2c_init(struct max96789_i2c *max96789_i2c)
 		if (!(mfd->gmsl_link_mask & BIT(link)))
 			continue;
 
-		ret = i2c_mux_add_adapter(max96789_i2c->mux, 0, link, 0);
+		ret = i2c_mux_add_adapter(max96789_i2c->mux, 0, link);
 		if (ret < 0)
 			goto error;
 	}
@@ -121,8 +120,9 @@ error:
 	return ret;
 }
 
-static int max96789_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
+static int max96789_i2c_probe(struct i2c_client *i2c)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(i2c);
 	struct max96789_i2c *max96789_i2c;
 	int ret;
 	const void *of_data;

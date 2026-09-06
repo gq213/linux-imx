@@ -15,6 +15,8 @@
 #include <linux/smp.h>
 #include <linux/cpuidle.h>
 
+#include <soc/imx/gpcv2.h>
+
 #define FSL_SIP_GPC                     0xC2000000
 #define FSL_SIP_CONFIG_GPC_MASK         0x00
 #define FSL_SIP_CONFIG_GPC_UNMASK       0x01
@@ -219,7 +221,7 @@ static void imx8mq_gpcv2_irq_mask(struct irq_data *d)
 	irq_chip_mask_parent(d);
 }
 
-int imx8mq_gpcv2_irq_set_affinity(struct irq_data *d, const struct cpumask *cpumask,
+static int imx8mq_gpcv2_irq_set_affinity(struct irq_data *d, const struct cpumask *cpumask,
 		      bool force)
 {
 	struct arm_smccc_res res;
@@ -361,14 +363,14 @@ static int __init imx_gpcv2_irqchip_init(struct device_node *node,
 		return -ENOMEM;
 	}
 
-	domain = irq_domain_add_hierarchy(parent_domain, 0, GPC_MAX_IRQS,
-				node, &gpcv2_irqchip_data_domain_ops, cd);
+	domain = irq_domain_create_hierarchy(parent_domain, 0, GPC_MAX_IRQS,
+				of_fwnode_handle(node), &gpcv2_irqchip_data_domain_ops, cd);
 	if (!domain) {
 		iounmap(cd->gpc_base);
 		kfree(cd);
 		return -ENOMEM;
 	}
-	irq_set_default_host(domain);
+	irq_set_default_domain(domain);
 
 	if (of_machine_is_compatible("fsl,imx8mq")) {
 		/* sw workaround for IPI can't wakeup CORE
@@ -413,6 +415,7 @@ static int __init imx_gpcv2_irqchip_init(struct device_node *node,
 	 * later the GPC power domain driver will not be skipped.
 	 */
 	of_node_clear_flag(node, OF_POPULATED);
+	fwnode_dev_initialized(domain->fwnode, false);
 	return 0;
 }
 

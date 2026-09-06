@@ -33,7 +33,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/fsl_devices.h>
 #include <linux/mipi_csi2.h>
-#include <media/v4l2-chip-ident.h>
+
 #include "v4l2-int-device.h"
 #include "mxc_v4l2_capture.h"
 
@@ -656,8 +656,7 @@ static struct regulator *core_regulator;
 static struct regulator *analog_regulator;
 static struct regulator *gpo_regulator;
 
-static int ov5640_probe(struct i2c_client *adapter,
-				const struct i2c_device_id *device_id);
+static int ov5640_probe(struct i2c_client *adapter);
 static void ov5640_remove(struct i2c_client *client);
 
 static s32 ov5640_read_reg(u16 reg, u8 *val);
@@ -1835,24 +1834,6 @@ static int ioctl_enum_frameintervals(struct v4l2_int_device *s,
 }
 
 /*!
- * ioctl_g_chip_ident - V4L2 sensor interface handler for
- *			VIDIOC_DBG_G_CHIP_IDENT ioctl
- * @s: pointer to standard V4L2 device structure
- * @id: pointer to int
- *
- * Return 0.
- */
-static int ioctl_g_chip_ident(struct v4l2_int_device *s, int *id)
-{
-	((struct v4l2_dbg_chip_ident *)id)->match.type =
-					V4L2_CHIP_MATCH_I2C_DRIVER;
-	strcpy(((struct v4l2_dbg_chip_ident *)id)->match.name,
-		"ov5640_mipi_camera");
-
-	return 0;
-}
-
-/*!
  * ioctl_init - V4L2 sensor interface handler for VIDIOC_INT_INIT
  * @s: pointer to standard V4L2 device structure
  */
@@ -1982,8 +1963,6 @@ static struct v4l2_int_ioctl_desc ov5640_ioctl_desc[] = {
 				(v4l2_int_ioctl_func *) ioctl_enum_framesizes},
 	{vidioc_int_enum_frameintervals_num,
 			(v4l2_int_ioctl_func *) ioctl_enum_frameintervals},
-	{vidioc_int_g_chip_ident_num,
-				(v4l2_int_ioctl_func *) ioctl_g_chip_ident},
 };
 #pragma GCC diagnostic pop
 
@@ -2007,8 +1986,7 @@ static struct v4l2_int_device ov5640_int_device = {
  * @param adapter            struct i2c_adapter *
  * @return  Error code indicating success or failure
  */
-static int ov5640_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ov5640_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	int retval;

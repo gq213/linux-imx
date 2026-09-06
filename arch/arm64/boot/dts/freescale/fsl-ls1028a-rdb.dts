@@ -96,6 +96,19 @@
 	};
 };
 
+&dspi2 {
+	bus-num = <2>;
+	status = "okay";
+
+	mikrobus@0 {
+		compatible = "semtech,sx1301";
+		reg = <0>;
+		spi-max-frequency = <2000000>;
+		fsl,spi-cs-sck-delay = <1000000>;
+		fsl,spi-sck-cs-delay = <50>;
+	};
+};
+
 &can0 {
 	status = "okay";
 
@@ -146,6 +159,8 @@
 &enetc_port0 {
 	phy-handle = <&sgmii_phy0>;
 	phy-mode = "sgmii";
+	phys = <&serdes 0>;
+	phy-names = "serdes";
 	managed = "in-band-status";
 	status = "okay";
 };
@@ -206,6 +221,37 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
+		i2c@0 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0x0>;
+
+			/* Atmel AT24C512C-XHD­B: 64 KB EEPROM */
+			eeprom@50 {
+				compatible = "atmel,24c512";
+				reg = <0x50>;
+				#address-cells = <1>;
+				#size-cells = <1>;
+			};
+
+			/* AT24C04C 512-byte DDR4 SPD EEPROM */
+			/* Documentation says 0x51, but must be even and i2cdetect says 0x52 */
+			eeprom@52 {
+				compatible = "atmel,24c04";
+				reg = <0x52>;
+				#address-cells = <1>;
+				#size-cells = <1>;
+			};
+
+			/* Atmel AT24C02C-XHM­B: 256-byte EEPROM */
+			eeprom@57 {
+				compatible = "atmel,24c02";
+				reg = <0x57>;
+				#address-cells = <1>;
+				#size-cells = <1>;
+			};
+		};
+
 		i2c@1 {
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -250,6 +296,18 @@
 				reg = <0x51>;
 			};
 		};
+
+		i2c@6 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0x6>;
+
+			pn7120: pn7120@28 {
+				compatible = "nxp,pn7120", "nxp,pn544";
+				reg = <0x28>;
+				clock-frequency = <1000000>;
+			};
+		};
 	};
 };
 
@@ -262,6 +320,8 @@
 	managed = "in-band-status";
 	phy-handle = <&qsgmii_phy0>;
 	phy-mode = "qsgmii";
+	phys = <&serdes 1>;
+	phy-names = "serdes";
 	status = "okay";
 };
 
@@ -270,6 +330,8 @@
 	managed = "in-band-status";
 	phy-handle = <&qsgmii_phy1>;
 	phy-mode = "qsgmii";
+	phys = <&serdes 1>;
+	phy-names = "serdes";
 	status = "okay";
 };
 
@@ -278,6 +340,8 @@
 	managed = "in-band-status";
 	phy-handle = <&qsgmii_phy2>;
 	phy-mode = "qsgmii";
+	phys = <&serdes 1>;
+	phy-names = "serdes";
 	status = "okay";
 };
 
@@ -286,6 +350,8 @@
 	managed = "in-band-status";
 	phy-handle = <&qsgmii_phy3>;
 	phy-mode = "qsgmii";
+	phys = <&serdes 1>;
+	phy-names = "serdes";
 	status = "okay";
 };
 

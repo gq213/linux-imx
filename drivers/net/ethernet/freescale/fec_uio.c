@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright 2021-2023 NXP
+ * Copyright 2021-2024 NXP
 
  * Portions of the code are derived from below files:
 	* drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
@@ -8,6 +8,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/of_device.h>
 #include <linux/of_platform.h>
 #include <linux/uio_driver.h>
 #include <linux/pm_runtime.h>
@@ -27,6 +28,7 @@
 
 #include "../stmicro/stmmac/stmmac_platform.h"
 #include "../stmicro/stmmac/stmmac.h"
+#include "../stmicro/stmmac/stmmac_fpe.h"
 #include <dt-bindings/firmware/imx/rsrc.h>
 #include <linux/firmware/imx/sci.h>
 
@@ -36,6 +38,7 @@ dma_addr_t bd_dma;
 int bd_size;
 struct bufdesc *cbd_base;
 resource_size_t size;
+static int pause = PAUSE_TIME;
 
 #define NAME_LENGTH		30
 #define DRIVER_NAME		"fec-uio"
@@ -71,6 +74,7 @@ MODULE_PARM_DESC(phyaddr, "Physical device address");
 #define STMMAC_PCS_TBI          (1 << 2)
 #define STMMAC_PCS_RTBI         (1 << 3)
 
+#define	FLOW_OFF	0
 static const char uio_device_name[] = "imx-fec-uio";
 static int mii_cnt;
 struct fec_uio_info {
@@ -122,7 +126,7 @@ struct imx_dwmac_ops {
 	u32 addr_width;
 	bool mac_rgmii_txclk_auto_adj;
 
-	int (*fix_soc_reset)(void *priv, void __iomem *ioaddr);
+	int (*fix_soc_reset)(struct stmmac_priv *priv, void __iomem *ioaddr);
 	int (*set_intf_mode)(struct plat_stmmacenet_data *plat_dat);
 };
 
@@ -182,7 +186,7 @@ static int imx_dwmac_init(struct platform_device *pdev, void *priv)
 	return 0;
 }
 
-static void imx_dwmac_fix_speed(void *priv, unsigned int speed)
+static void imx_dwmac_fix_speed(void *priv, int speed, unsigned int mode)
 {
 	struct plat_stmmacenet_data *plat_dat;
 	struct imx_priv_data *dwmac = priv;
@@ -192,8 +196,8 @@ static void imx_dwmac_fix_speed(void *priv, unsigned int speed)
 	plat_dat = dwmac->plat_dat;
 
 	if (dwmac->ops->mac_rgmii_txclk_auto_adj ||
-			(plat_dat->interface == PHY_INTERFACE_MODE_RMII) ||
-			(plat_dat->interface == PHY_INTERFACE_MODE_MII))
+			(plat_dat->phy_interface == PHY_INTERFACE_MODE_RMII) ||
+			(plat_dat->phy_interface == PHY_INTERFACE_MODE_MII))
 		return;
 
 	switch (speed) {
@@ -255,42 +259,26 @@ imx_dwmac_parse_dt(struct imx_priv_data *dwmac, struct device *dev)
 	return err;
 }
 
-static void stmmac_fpe_link_state_handle(struct stmmac_priv *priv, bool is_up)
-{
-	struct stmmac_fpe_cfg *fpe_cfg = priv->plat->fpe_cfg;
-	enum stmmac_fpe_state *lo_state = &fpe_cfg->lo_fpe_state;
-	enum stmmac_fpe_state *lp_state = &fpe_cfg->lp_fpe_state;
-	bool *hs_enable = &fpe_cfg->hs_enable;
-
-	if (is_up && *hs_enable) {
-		stmmac_fpe_send_mpacket(priv, priv->ioaddr, MPACKET_VERIFY);
-	} else {
-		*lo_state = FPE_STATE_OFF;
-		*lp_state = FPE_STATE_OFF;
-	}
-}
-
 static void stmmac_mac_link_down(struct phylink_config *config,
 		unsigned int mode, phy_interface_t interface)
 {
 	struct stmmac_priv *priv = netdev_priv(to_net_dev(config->dev));
 
 	stmmac_mac_set(priv, priv->ioaddr, false);
-	priv->eee_active = false;
-	priv->tx_lpi_enabled = false;
-	priv->eee_enabled = stmmac_eee_init(priv);
-	stmmac_set_eee_pls(priv, priv->hw, false);
+	if (priv->dma_cap.eee)
+		stmmac_set_eee_pls(priv, priv->hw, false);
 
-	if (priv->dma_cap.fpesel)
-		stmmac_fpe_link_state_handle(priv, false);
+	if (stmmac_fpe_supported(priv))
+		ethtool_mmsv_link_state_handle(&priv->fpe_cfg.mmsv, false);
 }
 
-static void stmmac_mac_flow_ctrl(struct stmmac_priv *priv, u32 duplex)
+static void stmmac_mac_flow_ctrl(struct stmmac_priv *priv, u32 duplex,
+					unsigned int flow_ctrl)
 {
 	u32 tx_cnt = priv->plat->tx_queues_to_use;
 
-	stmmac_flow_ctrl(priv, priv->hw, duplex, priv->flow_ctrl,
-			priv->pause, tx_cnt);
+	stmmac_flow_ctrl(priv, priv->hw, duplex, flow_ctrl, priv->pause_time,
+				tx_cnt);
 }
 
 static void stmmac_mac_link_up(struct phylink_config *config,
@@ -300,10 +288,11 @@ static void stmmac_mac_link_up(struct phylink_config *config,
 		bool tx_pause, bool rx_pause)
 {
 	struct stmmac_priv *priv = netdev_priv(to_net_dev(config->dev));
-	u32 ctrl;
+	unsigned int flow_ctrl = FLOW_OFF;
+	u32 old_ctrl, ctrl;
 
-	ctrl = readl(priv->ioaddr + MAC_CTRL_REG);
-	ctrl &= ~priv->hw->link.speed_mask;
+	old_ctrl = readl(priv->ioaddr + MAC_CTRL_REG);
+	ctrl = old_ctrl & ~priv->hw->link.speed_mask;
 
 	if (interface == PHY_INTERFACE_MODE_USXGMII) {
 		switch (speed) {
@@ -364,32 +353,24 @@ static void stmmac_mac_link_up(struct phylink_config *config,
 		}
 	}
 
-	priv->speed = speed;
-
 	if (priv->plat->fix_mac_speed)
-		priv->plat->fix_mac_speed(priv->plat->bsp_priv, speed);
+		priv->plat->fix_mac_speed(priv->plat->bsp_priv, speed, mode);
 
 	if (!duplex)
 		ctrl &= ~priv->hw->link.duplex;
 	else
 		ctrl |= priv->hw->link.duplex;
 
-	/* Flow Control operation */
-	if (tx_pause && rx_pause)
-		stmmac_mac_flow_ctrl(priv, duplex);
+	stmmac_mac_flow_ctrl(priv, duplex, flow_ctrl);
 
-	writel(ctrl, priv->ioaddr + MAC_CTRL_REG);
+	if (ctrl != old_ctrl)
+		writel(ctrl, priv->ioaddr + MAC_CTRL_REG);
 
 	stmmac_mac_set(priv, priv->ioaddr, true);
-	if (phy && priv->dma_cap.eee) {
-		priv->eee_active = phy_init_eee(phy, 0) >= 0;
-		priv->eee_enabled = stmmac_eee_init(priv);
-		priv->tx_lpi_enabled = priv->eee_enabled;
+	if (priv->dma_cap.eee)
 		stmmac_set_eee_pls(priv, priv->hw, true);
-	}
-
-	if (priv->dma_cap.fpesel)
-		stmmac_fpe_link_state_handle(priv, true);
+	if (stmmac_fpe_supported(priv))
+		ethtool_mmsv_link_state_handle(&priv->fpe_cfg.mmsv, false);
 }
 
 static struct phylink_pcs *stmmac_mac_select_pcs(struct phylink_config *config,
@@ -400,11 +381,10 @@ static struct phylink_pcs *stmmac_mac_select_pcs(struct phylink_config *config,
 	if (!priv->hw->xpcs)
 		return NULL;
 
-	return &priv->hw->xpcs->pcs;
+	return NULL;
 }
 
 static const struct phylink_mac_ops stmmac_phylink_mac_ops = {
-	.validate = phylink_generic_validate,
 	.mac_select_pcs = stmmac_mac_select_pcs,
 	.mac_link_down = stmmac_mac_link_down,
 	.mac_link_up = stmmac_mac_link_up,
@@ -413,27 +393,30 @@ static const struct phylink_mac_ops stmmac_phylink_mac_ops = {
 static int stmmac_phy_setup(struct stmmac_priv *priv)
 {
 	struct stmmac_mdio_bus_data *mdio_bus_data = priv->plat->mdio_bus_data;
-	struct fwnode_handle *fwnode = of_fwnode_handle(priv->plat->phylink_node);
 	int max_speed = priv->plat->max_speed;
 	int mode = priv->plat->phy_interface;
+	struct fwnode_handle *fwnode;
 	struct phylink *phylink;
+	struct phylink_pcs *pcs;
 
 	priv->phylink_config.dev = &priv->dev->dev;
 	priv->phylink_config.type = PHYLINK_NETDEV;
 	if (priv->plat->mdio_bus_data)
-		priv->phylink_config.ovr_an_inband =
-			mdio_bus_data->xpcs_an_inband;
-
-	if (!fwnode)
-		fwnode = dev_fwnode(priv->device);
+		priv->phylink_config.default_an_inband=
+			mdio_bus_data->default_an_inband;
 
 	/* Set the platform/firmware specified interface mode */
 	__set_bit(mode, priv->phylink_config.supported_interfaces);
 
 	/* If we have an xpcs, it defines which PHY interfaces are supported. */
 	if (priv->hw->xpcs)
-		xpcs_get_interfaces(priv->hw->xpcs,
-				priv->phylink_config.supported_interfaces);
+		pcs = xpcs_to_phylink_pcs(priv->hw->xpcs);
+	else
+		pcs = priv->hw->phylink_pcs;
+	if (pcs)
+		phy_interface_or(priv->phylink_config.supported_interfaces,
+			priv->phylink_config.supported_interfaces,
+			pcs->supported_interfaces);
 
 	priv->phylink_config.mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE |
 		MAC_10 | MAC_100;
@@ -443,6 +426,10 @@ static int stmmac_phy_setup(struct stmmac_priv *priv)
 
 	priv->phylink_config.mac_managed_pm = true;
 
+	fwnode = priv->plat->port_node;
+	if (!fwnode)
+		fwnode = dev_fwnode(priv->device);
+
 	phylink = phylink_create(&priv->phylink_config, fwnode,
 			mode, &stmmac_phylink_mac_ops);
 	if (IS_ERR(phylink))
@@ -451,6 +438,7 @@ static int stmmac_phy_setup(struct stmmac_priv *priv)
 	priv->phylink = phylink;
 	return 0;
 }
+
 static int stmmac_init_phy(struct net_device *dev)
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
@@ -461,7 +449,7 @@ static int stmmac_init_phy(struct net_device *dev)
 	if (!phylink_expects_phy(priv->phylink))
 		return 0;
 
-	fwnode = of_fwnode_handle(priv->plat->phylink_node);
+	fwnode = priv->plat->port_node;
 	if (!fwnode)
 		fwnode = dev_fwnode(priv->device);
 
@@ -499,7 +487,7 @@ static int stmmac_init_phy(struct net_device *dev)
 
 static void stmmac_check_pcs_mode(struct stmmac_priv *priv)
 {
-	int interface = priv->plat->interface;
+	int interface = priv->plat->phy_interface;
 
 	if (priv->dma_cap.pcs) {
 		if ((interface == PHY_INTERFACE_MODE_RGMII) ||
@@ -527,61 +515,6 @@ static int stmmac_hw_init(struct stmmac_priv *priv)
 	return 0;
 }
 
-static void stmmac_clk_csr_set(struct stmmac_priv *priv)
-{
-	u32 clk_rate;
-
-	clk_rate = clk_get_rate(priv->plat->stmmac_clk);
-
-	/* Platform provided default clk_csr would be assumed valid
-	 * for all other cases except for the below mentioned ones.
-	 * For values higher than the IEEE 802.3 specified frequency
-	 * we can not estimate the proper divider as it is not known
-	 * the frequency of clk_csr_i. So we do not change the default
-	 * divider.
-	 */
-	if (!(priv->clk_csr & MAC_CSR_H_FRQ_MASK)) {
-		if (clk_rate < CSR_F_35M)
-			priv->clk_csr = STMMAC_CSR_20_35M;
-		else if ((clk_rate >= CSR_F_35M) && (clk_rate < CSR_F_60M))
-			priv->clk_csr = STMMAC_CSR_35_60M;
-		else if ((clk_rate >= CSR_F_60M) && (clk_rate < CSR_F_100M))
-			priv->clk_csr = STMMAC_CSR_60_100M;
-		else if ((clk_rate >= CSR_F_100M) && (clk_rate < CSR_F_150M))
-			priv->clk_csr = STMMAC_CSR_100_150M;
-		else if ((clk_rate >= CSR_F_150M) && (clk_rate < CSR_F_250M))
-			priv->clk_csr = STMMAC_CSR_150_250M;
-		else if ((clk_rate >= CSR_F_250M) && (clk_rate <= CSR_F_300M))
-			priv->clk_csr = STMMAC_CSR_250_300M;
-	}
-
-	if (priv->plat->has_sun8i) {
-		if (clk_rate > 160000000)
-			priv->clk_csr = 0x03;
-		else if (clk_rate > 80000000)
-			priv->clk_csr = 0x02;
-		else if (clk_rate > 40000000)
-			priv->clk_csr = 0x01;
-		else
-			priv->clk_csr = 0;
-	}
-
-	if (priv->plat->has_xgmac) {
-		if (clk_rate > 400000000)
-			priv->clk_csr = 0x5;
-		else if (clk_rate > 350000000)
-			priv->clk_csr = 0x4;
-		else if (clk_rate > 300000000)
-			priv->clk_csr = 0x3;
-		else if (clk_rate > 250000000)
-			priv->clk_csr = 0x2;
-		else if (clk_rate > 150000000)
-			priv->clk_csr = 0x1;
-		else
-			priv->clk_csr = 0x0;
-	}
-}
-
 static int stmmac_qos_dvr_probe(struct device *device,
 		struct plat_stmmacenet_data *plat_dat,
 		struct stmmac_resources *res)
@@ -600,10 +533,11 @@ static int stmmac_qos_dvr_probe(struct device *device,
 	priv = netdev_priv(ndev);
 	priv->device = device;
 	priv->dev = ndev;
+	priv->pause_time = pause;
 	priv->plat = plat_dat;
 	priv->ioaddr = res->addr;
 	priv->dev->base_addr = (unsigned long)res->addr;
-	priv->plat->dma_cfg->multi_msi_en = priv->plat->multi_msi_en;
+	priv->plat->dma_cfg->multi_msi_en = (priv->plat->flags & STMMAC_FLAG_MULTI_MSI_EN);
 
 	dev_set_drvdata(device, priv->dev);
 
@@ -629,17 +563,6 @@ static int stmmac_qos_dvr_probe(struct device *device,
 		return -1;
 
 	mutex_init(&priv->lock);
-
-	/* If a specific clk_csr value is passed from the platform
-	 * this means that the CSR Clock Range selection cannot be
-	 * changed at run-time and it is fixed. Viceversa the driver'll try to
-	 * set the MDC clock dynamically according to the csr actual
-	 * clock input.*/
-
-	if (priv->plat->clk_csr >= 0)
-		priv->clk_csr = priv->plat->clk_csr;
-	else
-		stmmac_clk_csr_set(priv);
 
 	/* Verify if RGMII/SGMII is supported */
 	stmmac_check_pcs_mode(priv);
@@ -708,7 +631,7 @@ static int enet_qos_probe(struct platform_device *pdev)
 	if (!dwmac)
 		return -ENOMEM;
 
-	plat_dat = stmmac_probe_config_dt(pdev, stmmac_res.mac);
+	plat_dat = devm_stmmac_probe_config_dt(pdev, stmmac_res.mac);
 	if (IS_ERR(plat_dat))
 		return PTR_ERR(plat_dat);
 
@@ -716,7 +639,7 @@ static int enet_qos_probe(struct platform_device *pdev)
 	if (!data) {
 		dev_err(&pdev->dev, "failed to get match data\n");
 		ret = -EINVAL;
-		goto err_match_data;
+		goto err_parse_dt;
 	}
 
 	dwmac->ops = data;
@@ -756,8 +679,6 @@ err_dwmac_init:
 	imx_dwmac_clks_config(dwmac, false);
 err_clks_config:
 err_parse_dt:
-err_match_data:
-	stmmac_remove_config_dt(pdev, plat_dat);
 	return ret;
 }
 
@@ -860,50 +781,33 @@ static int fec_enet_uio_mdio_wait(struct fec_enet_private *fep)
 	return ret;
 }
 
-static int fec_enet_uio_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
+static int fec_enet_uio_mdio_read_c22(struct mii_bus *bus, int mii_id, int regnum)
 {
 	struct fec_enet_private *fep = bus->priv;
 	struct device *dev = &fep->pdev->dev;
 	int ret = 0, frame_start, frame_addr, frame_op;
-	bool is_c45 = !!(regnum & MII_ADDR_C45);
 
 	ret = pm_runtime_resume_and_get(dev);
 	if (ret < 0)
 		return ret;
 
-	if (is_c45) {
-		frame_start = FEC_MMFR_ST_C45;
+	/* C22 read */
+	frame_op = FEC_MMFR_OP_READ;
+	frame_start = FEC_MMFR_ST;
+	frame_addr = regnum;
 
-		/* write address */
-		frame_addr = (regnum >> 16);
-		writel(frame_start | FEC_MMFR_OP_ADDR_WRITE |
-				FEC_MMFR_PA(mii_id) | FEC_MMFR_RA(frame_addr) |
-				FEC_MMFR_TA | (regnum & 0xFFFF),
-				fep->hwp + FEC_MII_DATA);
-
-		/* wait for end of transfer */
-		ret = fec_enet_uio_mdio_wait(fep);
-		if (ret) {
-			netdev_err(fep->netdev, "MDIO address write timeout\n");
-			goto out;
-		}
-		frame_op = FEC_MMFR_OP_READ_C45;
-	} else {
-		/* C22 read */
-		frame_op = FEC_MMFR_OP_READ;
-		frame_start = FEC_MMFR_ST;
-		frame_addr = regnum;
-	}
 	/* start a read op */
 	writel(frame_start | frame_op |
 			FEC_MMFR_PA(mii_id) | FEC_MMFR_RA(frame_addr) |
 			FEC_MMFR_TA, fep->hwp + FEC_MII_DATA);
+
 	/* wait for end of transfer */
 	ret = fec_enet_uio_mdio_wait(fep);
 	if (ret) {
 		netdev_err(fep->netdev, "MDIO read timeout\n");
 		goto out;
 	}
+
 	ret = FEC_MMFR_DATA(readl(fep->hwp + FEC_MII_DATA));
 
 out:
@@ -913,45 +817,118 @@ out:
 	return ret;
 }
 
-static int fec_enet_uio_mdio_write(struct mii_bus *bus, int mii_id, int regnum,
-		u16 value)
+static int fec_enet_uio_mdio_read_c45(struct mii_bus *bus, int mii_id,
+				      int devad, int regnum)
 {
 	struct fec_enet_private *fep = bus->priv;
 	struct device *dev = &fep->pdev->dev;
-	int ret, frame_start, frame_addr;
-	bool is_c45 = !!(regnum & MII_ADDR_C45);
+	int ret = 0, frame_start, frame_op;
 
 	ret = pm_runtime_resume_and_get(dev);
 	if (ret < 0)
 		return ret;
 
-	if (is_c45) {
-		frame_start = FEC_MMFR_ST_C45;
+	frame_start = FEC_MMFR_ST_C45;
 
-		/* write address */
-		frame_addr = (regnum >> 16);
-		writel(frame_start | FEC_MMFR_OP_ADDR_WRITE |
-				FEC_MMFR_PA(mii_id) | FEC_MMFR_RA(frame_addr) |
-				FEC_MMFR_TA | (regnum & 0xFFFF),
-				fep->hwp + FEC_MII_DATA);
+	/* write address */
+	writel(frame_start | FEC_MMFR_OP_ADDR_WRITE |
+			FEC_MMFR_PA(mii_id) | FEC_MMFR_RA(devad) |
+			FEC_MMFR_TA | (regnum & 0xFFFF),
+			fep->hwp + FEC_MII_DATA);
 
-		/* wait for end of transfer */
-		ret = fec_enet_uio_mdio_wait(fep);
-		if (ret) {
-			netdev_err(fep->netdev, "MDIO address write timeout\n");
-			goto out;
-		}
-	} else {
-		/* C22 write */
-		frame_start = FEC_MMFR_ST;
-		frame_addr = regnum;
+	/* wait for end of transfer */
+	ret = fec_enet_uio_mdio_wait(fep);
+	if (ret) {
+		netdev_err(fep->netdev, "MDIO address write timeout\n");
+		goto out;
+	}
+
+	frame_op = FEC_MMFR_OP_READ_C45;
+
+	/* start a read op */
+	writel(frame_start | frame_op |
+	       FEC_MMFR_PA(mii_id) | FEC_MMFR_RA(devad) |
+	       FEC_MMFR_TA, fep->hwp + FEC_MII_DATA);
+
+	/* wait for end of transfer */
+	ret = fec_enet_uio_mdio_wait(fep);
+	if (ret) {
+		netdev_err(fep->netdev, "MDIO read timeout\n");
+		goto out;
+	}
+
+	ret = FEC_MMFR_DATA(readl(fep->hwp + FEC_MII_DATA));
+
+out:
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_put_autosuspend(dev);
+
+	return ret;
+}
+
+static int fec_enet_uio_mdio_write_c22(struct mii_bus *bus, int mii_id, int regnum,
+					u16 value)
+{
+	struct fec_enet_private *fep = bus->priv;
+	struct device *dev = &fep->pdev->dev;
+	int ret, frame_start, frame_addr;
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
+
+	/* C22 write */
+	frame_start = FEC_MMFR_ST;
+	frame_addr = regnum;
+
+	/* start a write op */
+	writel(frame_start | FEC_MMFR_OP_WRITE |
+		FEC_MMFR_PA(mii_id) | FEC_MMFR_RA(frame_addr) |
+		FEC_MMFR_TA | FEC_MMFR_DATA(value),
+		fep->hwp + FEC_MII_DATA);
+
+	/* wait for end of transfer */
+	ret = fec_enet_uio_mdio_wait(fep);
+	if (ret)
+		netdev_err(fep->netdev, "MDIO write timeout\n");
+
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_put_autosuspend(dev);
+
+	return ret;
+}
+
+static int fec_enet_uio_mdio_write_c45(struct mii_bus *bus, int mii_id,
+				   int devad, int regnum, u16 value)
+{
+	struct fec_enet_private *fep = bus->priv;
+	struct device *dev = &fep->pdev->dev;
+	int ret, frame_start;
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
+
+	frame_start = FEC_MMFR_ST_C45;
+
+	/* write address */
+	writel(frame_start | FEC_MMFR_OP_ADDR_WRITE |
+	       FEC_MMFR_PA(mii_id) | FEC_MMFR_RA(devad) |
+	       FEC_MMFR_TA | (regnum & 0xFFFF),
+	       fep->hwp + FEC_MII_DATA);
+
+	/* wait for end of transfer */
+	ret = fec_enet_uio_mdio_wait(fep);
+	if (ret) {
+		netdev_err(fep->netdev, "MDIO address write timeout\n");
+		goto out;
 	}
 
 	/* start a write op */
 	writel(frame_start | FEC_MMFR_OP_WRITE |
-			FEC_MMFR_PA(mii_id) | FEC_MMFR_RA(frame_addr) |
-			FEC_MMFR_TA | FEC_MMFR_DATA(value),
-			fep->hwp + FEC_MII_DATA);
+	       FEC_MMFR_PA(mii_id) | FEC_MMFR_RA(devad) |
+	       FEC_MMFR_TA | FEC_MMFR_DATA(value),
+	       fep->hwp + FEC_MII_DATA);
 
 	/* wait for end of transfer */
 	ret = fec_enet_uio_mdio_wait(fep);
@@ -1069,8 +1046,10 @@ static int fec_enet_uio_mii_init(struct platform_device *pdev)
 	}
 
 	fep->mii_bus->name = "fec_enet_mii_bus";
-	fep->mii_bus->read = fec_enet_uio_mdio_read;
-	fep->mii_bus->write = fec_enet_uio_mdio_write;
+	fep->mii_bus->read = fec_enet_uio_mdio_read_c22;
+	fep->mii_bus->write = fec_enet_uio_mdio_write_c22;
+	fep->mii_bus->read_c45 = fec_enet_uio_mdio_read_c45;
+	fep->mii_bus->write_c45 = fec_enet_uio_mdio_write_c45;
 	snprintf(fep->mii_bus->id, MII_BUS_ID_SIZE, "%s-%x",
 			pdev->name, fep->dev_id + 1);
 	fep->mii_bus->priv = fep;
@@ -1418,7 +1397,7 @@ failed_kzalloc:
 	return ret;
 }
 
-static int
+static void 
 fec_enet_uio_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
@@ -1448,15 +1427,19 @@ fec_enet_uio_remove(struct platform_device *pdev)
 	free_netdev(ndev);
 	dev_info(fec_dev->dev, "\"%s\" successfully removed \n",
 		 fec_dev->info.name);
-
-	return 0;
 }
 
 static int
 fec_enet_uio_probe(struct platform_device *pdev)
 {
-	const char *comp_str = of_get_property(pdev->dev.of_node, "compatible", NULL);
+	const char *comp_str;
 	int ret;
+
+	comp_str = of_get_property(pdev->dev.of_node, "compatible", NULL);
+	if (!comp_str) {
+		dev_err(&pdev->dev, "Ethernet compatible is missing.\n");
+		return -EINVAL;
+	}
 
 	/* This is for the ENET-QOS ethernet (i.MX8MP & i.MX93 supported)*/
 	if (!strcmp(comp_str, "fsl,imx-enet-qos")) {

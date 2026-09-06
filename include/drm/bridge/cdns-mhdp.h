@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) Fuzhou Rockchip Electronics Co.Ltd
+ * Copyright (C) Rockchip Electronics Co., Ltd.
  * Author: Chris Zhong <zyw@rock-chips.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -93,7 +93,7 @@
 #define SOURCE_PIF_PKT_ALLOC_WR_EN	0x30830
 #define SOURCE_PIF_SW_RESET		0x30834
 
-/* bellow registers need access by mailbox */
+/* below registers need access by mailbox */
 /* source phy comp */
 #define PHY_DATA_SEL			0x0818
 #define LANES_CONFIG			0x0814
@@ -768,7 +768,7 @@ struct cdns_mhdp_device {
 	struct platform_device	*audio_pdev;
 	struct audio_info	audio_info;
 
-	struct cdns_mhdp_bridge	bridge;
+	struct cdns_mhdp_bridge	*bridge;
 	struct phy		*phy;
 
 	struct video_info	video_info;
@@ -815,6 +815,7 @@ struct cdns_mhdp_device {
 			struct cdns_mhdp_cec cec;
 			u32 char_rate;
 			u32 hdmi_type;
+			bool hdr_enable;
 		} hdmi;
 	};
 	const struct cdns_plat_data *plat_data;
@@ -880,7 +881,9 @@ int cdns_mhdp_mailbox_validate_receive(struct cdns_mhdp_device *mhdp,
 					      u8 module_id, u8 opcode,
 					      u16 req_size);
 void cdns_mhdp_infoframe_set(struct cdns_mhdp_device *mhdp,
-					u8 entry_id, u8 packet_len, u8 *packet, u8 packet_type);
+			     u8 entry_id, u8 packet_len, u8 *packet, u8 packet_type);
+void cdns_mhdp_infoframe_remove(struct cdns_mhdp_device *mhdp,
+				u8 entry_id, u8 packet_type);
 int cdns_hdmi_get_edid_block(void *data, u8 *edid, u32 block, size_t length);
 int cdns_hdmi_scdc_read(struct cdns_mhdp_device *mhdp, u8 addr, u8 *data);
 int cdns_hdmi_scdc_write(struct cdns_mhdp_device *mhdp, u8 addr, u8 value);
@@ -914,9 +917,7 @@ int cdns_hdmi_set_plugged_cb(struct cdns_mhdp_device *mhdp, hdmi_codec_plugged_c
 			     struct device *codec_dev);
 
 /* CEC */
-#ifdef CONFIG_DRM_CDNS_HDMI_CEC
 int cdns_mhdp_register_cec_driver(struct cdns_mhdp_cec *cec);
 int cdns_mhdp_unregister_cec_driver(struct cdns_mhdp_cec *cec);
-#endif
 
 #endif /* CDNS_MHDP_H_ */

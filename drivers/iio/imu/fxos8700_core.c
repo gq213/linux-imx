@@ -8,7 +8,6 @@
  */
 #include <linux/module.h>
 #include <linux/regmap.h>
-#include <linux/acpi.h>
 #include <linux/bitops.h>
 #include <linux/bitfield.h>
 
@@ -367,12 +366,7 @@ static int fxos8700_set_scale(struct fxos8700_data *data,
 		return ret;
 
 	active_mode = val & FXOS8700_ACTIVE;
-
 	if (active_mode) {
-		/*
-		 * The device must be in standby mode to change any of the
-		 * other fields within CTRL_REG1
-		 */
 		ret = regmap_write(data->regmap, FXOS8700_CTRL_REG1,
 				   val & ~FXOS8700_ACTIVE);
 		if (ret)

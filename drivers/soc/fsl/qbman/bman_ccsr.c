@@ -146,17 +146,6 @@ static int bm_set_memory(u64 ba, u32 size)
 static dma_addr_t fbpr_a;
 static size_t fbpr_sz;
 
-static int bman_fbpr(struct reserved_mem *rmem)
-{
-	fbpr_a = rmem->base;
-	fbpr_sz = rmem->size;
-
-	WARN_ON(!(fbpr_a && fbpr_sz));
-
-	return 0;
-}
-RESERVEDMEM_OF_DECLARE(bman_fbpr, "fsl,bman-fbpr", bman_fbpr);
-
 static irqreturn_t bman_isr(int irq, void *ptr)
 {
 	u32 isr_val, ier_val, ecsr_val, isr_mask, i;
@@ -209,19 +198,19 @@ void bman_done_cleanup(void)
 
 static int fsl_bman_probe(struct platform_device *pdev)
 {
-	int ret, err_irq;
 	struct device *dev = &pdev->dev;
-	struct device_node *node = dev->of_node;
+	struct fwnode_handle *fwnode = dev_fwnode(dev);
 	struct resource *res;
 	u16 id, bm_pool_cnt;
+	int ret, err_irq;
 	u8 major, minor;
 
 	__bman_probed = -1;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
-		dev_err(dev, "Can't get %pOF property 'IORESOURCE_MEM'\n",
-			node);
+		dev_err(dev, "Can't get %pfw property 'IORESOURCE_MEM'\n",
+			fwnode);
 		return -ENXIO;
 	}
 	bm_ccsr_start = devm_ioremap(dev, res->start, resource_size(res));
@@ -244,18 +233,12 @@ static int fsl_bman_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	/*
-	 * If FBPR memory wasn't defined using the qbman compatible string
-	 * try using the of_reserved_mem_device method
-	 */
-	if (!fbpr_a) {
-		ret = qbman_init_private_mem(dev, 0, &fbpr_a, &fbpr_sz,
-					     DPAA_BMAN_DEV);
-		if (ret) {
-			dev_err(dev, "qbman_init_private_mem() failed 0x%x\n",
-				ret);
-			return -ENODEV;
-		}
+	ret = qbman_init_private_mem(dev, 0, "fsl,bman-fbpr", &fbpr_a, &fbpr_sz,
+				     DPAA_BMAN_DEV);
+	if (ret) {
+		dev_err(dev, "qbman_init_private_mem() failed 0x%x\n",
+			ret);
+		return -ENODEV;
 	}
 
 	dev_dbg(dev, "Allocated FBPR 0x%llx 0x%zx\n", fbpr_a, fbpr_sz);
@@ -264,14 +247,14 @@ static int fsl_bman_probe(struct platform_device *pdev)
 
 	err_irq = platform_get_irq(pdev, 0);
 	if (err_irq <= 0) {
-		dev_info(dev, "Can't get %pOF IRQ\n", node);
+		dev_info(dev, "Can't get %pfw IRQ\n", fwnode);
 		return -ENODEV;
 	}
 	ret = devm_request_irq(dev, err_irq, bman_isr, IRQF_SHARED, "bman-err",
 			       dev);
 	if (ret)  {
-		dev_err(dev, "devm_request_irq() failed %d for '%pOF'\n",
-			ret, node);
+		dev_err(dev, "devm_request_irq() failed %d for '%pfw'\n",
+			ret, fwnode);
 		return ret;
 	}
 	/* Disable Buffer Pool State Change */
@@ -301,7 +284,6 @@ static int fsl_bman_probe(struct platform_device *pdev)
 
 	__bman_probed = 1;
 
-	dev_dbg(dev, "Bman probed successfully [%d]\n", __bman_probed);
 	return 0;
 };
 
@@ -312,9 +294,12 @@ static const struct of_device_id fsl_bman_ids[] = {
 	{}
 };
 
+#if IS_ENABLED(CONFIG_ACPI)
 static const struct acpi_device_id fsl_bman_acpi_ids[] = {
-	{"NXP0021", 0}
+	{"NXP0021", 0},
+	{}
 };
+#endif
 
 static struct platform_driver fsl_bman_driver = {
 	.driver = {

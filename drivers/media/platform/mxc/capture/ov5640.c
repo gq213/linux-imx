@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2012-2015 Freescale Semiconductor, Inc. All Rights Reserved.
- * Copyright 2019 NXP
+ * Copyright 2019-2025 NXP
  */
 
 /*
@@ -29,7 +29,7 @@
 #include <linux/of_gpio.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/regulator/consumer.h>
-#include <media/v4l2-chip-ident.h>
+
 #include "v4l2-int-device.h"
 #include "mxc_v4l2_capture.h"
 
@@ -559,8 +559,7 @@ static struct regulator *io_regulator;
 static struct regulator *core_regulator;
 static struct regulator *analog_regulator;
 
-static int ov5640_probe(struct i2c_client *adapter,
-				const struct i2c_device_id *device_id);
+static int ov5640_probe(struct i2c_client *adapter);
 static void ov5640_remove(struct i2c_client *client);
 
 static s32 ov5640_read_reg(u16 reg, u8 *val);
@@ -776,7 +775,8 @@ static int ov5640_get_sysclk(void)
 	int xvclk = ov5640_data.mclk / 10000;
 	int sysclk;
 	int temp1, temp2;
-	int Multiplier, PreDiv, VCO, SysDiv, Pll_rdiv, Bit_div2x, sclk_rdiv;
+	int Multiplier, PreDiv, VCO, SysDiv, Pll_rdiv, sclk_rdiv;
+	int Bit_div2x = 4;
 	int sclk_rdiv_map[] = {1, 2, 4, 8};
 	u8 regval = 0;
 
@@ -785,8 +785,8 @@ static int ov5640_get_sysclk(void)
 	if (temp2 == 8 || temp2 == 10) {
 		Bit_div2x = temp2 / 2;
 	} else {
-		pr_err("ov5640: unsupported bit mode %d\n", temp2);
-		return -1;
+		pr_warn("ov5640: unsupported bit mode %d, default to 8\n",
+			temp2);
 	}
 
 	temp1 = ov5640_read_reg(0x3035, &regval);
@@ -1681,23 +1681,6 @@ static int ioctl_enum_frameintervals(struct v4l2_int_device *s,
 }
 
 /*!
- * ioctl_g_chip_ident - V4L2 sensor interface handler for
- *			VIDIOC_DBG_G_CHIP_IDENT ioctl
- * @s: pointer to standard V4L2 device structure
- * @id: pointer to int
- *
- * Return 0.
- */
-static int ioctl_g_chip_ident(struct v4l2_int_device *s, int *id)
-{
-	((struct v4l2_dbg_chip_ident *)id)->match.type =
-					V4L2_CHIP_MATCH_I2C_DRIVER;
-	strcpy(((struct v4l2_dbg_chip_ident *)id)->match.name, "ov5640_camera");
-
-	return 0;
-}
-
-/*!
  * ioctl_init - V4L2 sensor interface handler for VIDIOC_INT_INIT
  * @s: pointer to standard V4L2 device structure
  */
@@ -1738,8 +1721,6 @@ static int ioctl_dev_init(struct v4l2_int_device *s)
 	u32 tgt_fps;	/* target frames per secound */
 	enum ov5640_frame_rate frame_rate;
 	int ret;
-
-	ov5640_data.on = true;
 
 	/* mclk */
 	tgt_xclk = ov5640_data.mclk;
@@ -1809,8 +1790,6 @@ static struct v4l2_int_ioctl_desc ov5640_ioctl_desc[] = {
 	  (v4l2_int_ioctl_func *)ioctl_enum_framesizes },
 	{ vidioc_int_enum_frameintervals_num,
 	  (v4l2_int_ioctl_func *)ioctl_enum_frameintervals },
-	{ vidioc_int_g_chip_ident_num,
-	  (v4l2_int_ioctl_func *)ioctl_g_chip_ident },
 };
 #pragma GCC diagnostic pop
 
@@ -1834,8 +1813,7 @@ static struct v4l2_int_device ov5640_int_device = {
  * @param adapter            struct i2c_adapter *
  * @return  Error code indicating success or failure
  */
-static int ov5640_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ov5640_probe(struct i2c_client *client)
 {
 	struct pinctrl *pinctrl;
 	struct device *dev = &client->dev;
@@ -1919,6 +1897,8 @@ static int ov5640_probe(struct i2c_client *client,
 
 	ov5640_power_down(0);
 
+	ov5640_data.on = true;
+
 	retval = ov5640_read_reg(OV5640_CHIP_ID_HIGH_BYTE, &chip_id_high);
 	if (retval < 0 || chip_id_high != 0x56) {
 		clk_disable_unprepare(ov5640_data.sensor_clk);
@@ -1954,7 +1934,7 @@ static int ov5640_probe(struct i2c_client *client,
 static void ov5640_remove(struct i2c_client *client)
 {
 	v4l2_int_device_unregister(&ov5640_int_device);
-	ov5640_regulator_disable();
+	ioctl_s_power(&ov5640_int_device, false);
 }
 
 module_i2c_driver(ov5640_i2c_driver);

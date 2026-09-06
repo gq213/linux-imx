@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config NET_DSA_NETC_SWITCH
+	tristate "NXP NETC Ethernet switch support"
+	depends on NET_DSA && PCI
+	depends on PTP_1588_CLOCK_OPTIONAL
+	select NET_DSA_TAG_NETC
+	select FSL_ENETC_MDIO
+	select PCS_XPCS
+	select NXP_NTMP
+	select NXP_NETC_LIB
+	help
+	  This driver supports the NXP NETC Ethernet switch, which is embedded
+	  as a PCIe function of the NXP NETC IP. But note that this driver does
+	  only support switch versions greater than or equal to NETC v4.3.
+
+	  If compiled as module (M), the module name is nxp-netc-switch.
+
+config NET_DSA_NETC_SWITCH_CTF
+	bool "Enable cut-through forwarding"
+	default y
+	depends on NET_DSA_NETC_SWITCH
+	help
+	  Say Y to enable the cut-through forwarding on all ports of the switch.
+
+config NET_DSA_NETC_SWITCH_FM
+	tristate "Support NETC Switch Frame Modification"
+	default m
+	depends on NET_DSA_NETC_SWITCH
+	help
+	  This driver supports the frame modification feature via NTMP. It is a
+	  special feature of NXP NETC Ethernet switch. This feature can modify
+	  the passing network packets on the fly. It also supports the OPC UA
+	  PUBSUB summation.
+
+	  Refer to Frame Modification Table in NETC reference manual.

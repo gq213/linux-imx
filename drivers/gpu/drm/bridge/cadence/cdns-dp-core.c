@@ -13,7 +13,7 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_edid.h>
-#include <drm/drm_encoder_slave.h>
+#include <drm/drm_encoder.h>
 #include <drm/display/drm_hdcp_helper.h>
 #include <drm/drm_of.h>
 #include <drm/drm_probe_helper.h>
@@ -26,8 +26,8 @@
 #include <linux/mutex.h>
 #include <linux/of_device.h>
 
-#include "cdns-mhdp-hdcp.h"
 #include "cdns-hdcp-common.h"
+#include "cdns-mhdp-hdcp.h"
 
 #define CDNS_DP_HPD_POLL_DWN_LOOP	5
 #define CDNS_DP_HPD_POLL_DWN_DLY_US	200
@@ -256,7 +256,7 @@ static void cdns_dp_mode_set(struct cdns_mhdp_device *mhdp)
 	return;
 }
 
-void cdns_dp_handle_hpd_irq(struct cdns_mhdp_device *mhdp)
+static void cdns_dp_handle_hpd_irq(struct cdns_mhdp_device *mhdp)
 {
 	u8 status[6];
 
@@ -306,19 +306,14 @@ static int cdns_dp_connector_get_modes(struct drm_connector *connector)
 	struct cdns_mhdp_device *mhdp = container_of(connector,
 					struct cdns_mhdp_device, connector.base);
 	int num_modes = 0;
-	struct edid *edid;
+	const struct drm_edid *drm_edid;
 
-	edid = drm_do_get_edid(&mhdp->connector.base,
-				   cdns_mhdp_get_edid_block, mhdp);
-	if (edid) {
-		DRM_DEBUG_DRIVER("%x,%x,%x,%x,%x,%x,%x,%x\n",
-				 edid->header[0], edid->header[1],
-				 edid->header[2], edid->header[3],
-				 edid->header[4], edid->header[5],
-				 edid->header[6], edid->header[7]);
-		drm_connector_update_edid_property(connector, edid);
-		num_modes = drm_add_edid_modes(connector, edid);
-		kfree(edid);
+	drm_edid = drm_edid_read_custom(&mhdp->connector.base,
+					cdns_mhdp_get_edid_block, mhdp);
+	if (drm_edid) {
+		drm_edid_connector_update(connector, drm_edid);
+		num_modes = drm_edid_connector_add_modes(connector);
+		drm_edid_free(drm_edid);
 	}
 
 	if (num_modes == 0)
@@ -391,10 +386,10 @@ static const struct drm_connector_helper_funcs cdns_dp_connector_helper_funcs = 
 };
 
 static int cdns_dp_bridge_attach(struct drm_bridge *bridge,
+				 struct drm_encoder *encoder,
 				 enum drm_bridge_attach_flags flags)
 {
 	struct cdns_mhdp_device *mhdp = bridge->driver_private;
-	struct drm_encoder *encoder = bridge->encoder;
 	struct drm_connector *connector = &mhdp->connector.base;
 	int ret;
 
@@ -805,10 +800,14 @@ static int __cdns_dp_probe(struct platform_device *pdev,
 			enable_irq(mhdp->irq[IRQ_IN]);
 	}
 
-	mhdp->bridge.base.driver_private = mhdp;
-	mhdp->bridge.base.funcs = &cdns_dp_bridge_funcs;
+	mhdp->bridge = devm_drm_bridge_alloc(dev, struct cdns_mhdp_bridge, base,
+					     &cdns_dp_bridge_funcs);
+	if (IS_ERR(mhdp->bridge))
+		return PTR_ERR(mhdp->bridge);
+
+	mhdp->bridge->base.driver_private = mhdp;
 #ifdef CONFIG_OF
-	mhdp->bridge.base.of_node = dev->of_node;
+	mhdp->bridge->base.of_node = dev->of_node;
 #endif
 
 	dev_set_drvdata(dev, mhdp);
@@ -842,7 +841,7 @@ int cdns_dp_probe(struct platform_device *pdev,
 	if (ret)
 		return ret;
 
-	drm_bridge_add(&mhdp->bridge.base);
+	drm_bridge_add(&mhdp->bridge->base);
 
 	return 0;
 }
@@ -852,7 +851,7 @@ void cdns_dp_remove(struct platform_device *pdev)
 {
 	struct cdns_mhdp_device *mhdp = platform_get_drvdata(pdev);
 
-	drm_bridge_remove(&mhdp->bridge.base);
+	drm_bridge_remove(&mhdp->bridge->base);
 
 	__cdns_dp_remove(mhdp);
 }
@@ -870,7 +869,7 @@ int cdns_dp_bind(struct platform_device *pdev, struct drm_encoder *encoder,
 	if (ret < 0)
 		return ret;
 
-	ret = drm_bridge_attach(encoder, &mhdp->bridge.base, NULL, 0);
+	ret = drm_bridge_attach(encoder, &mhdp->bridge->base, NULL, 0);
 	if (ret) {
 		cdns_dp_remove(pdev);
 		DRM_ERROR("Failed to initialize bridge with drm\n");

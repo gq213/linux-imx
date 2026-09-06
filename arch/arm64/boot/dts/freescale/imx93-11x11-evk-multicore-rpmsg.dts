@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Copyright 2025 NXP
+ */
+
+/dts-v1/;
+#include "imx93-11x11-evk-multicore-rtos.dts"
+#include "imx93-generic-mbox.dtsi"
+
+/ {
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		vdev0vring0_ca55: vdev0vring0@fe100000 {
+			reg = <0 0xfe100000 0 0x8000>;
+			no-map;
+		};
+
+		vdev0vring1_ca55: vdev0vring1@fe108000 {
+			reg = <0 0xfe108000 0 0x8000>;
+			no-map;
+		};
+
+		rsc_table_ca55: rsc-table@fe1f0000 {
+			reg = <0 0xfe1f0000 0 0x1000>;
+			no-map;
+		};
+
+		vdev0buffer_ca55: vdev0buffer@fe200000 {
+			compatible = "shared-dma-pool";
+			reg = <0 0xfe200000 0 0x100000>;
+			no-map;
+		};
+	};
+};
+
+&ca55_1 {
+	memory-region = <&vdev0buffer_ca55>, <&vdev0vring0_ca55>, <&vdev0vring1_ca55>, <&rsc_table_ca55>, <&rtos_ca55_reserved>;
+	dma-coherent;
+	mbox-names = "tx", "rx", "rxdb";
+	mboxes = <&gen_sw_mbox 0 0 1	/* Tx channel with ACK */
+		  &gen_sw_mbox 1 0 0	/* Rx channel without ACK */
+		  &gen_sw_mbox 2 0 1>;	/* RXDB channel with ACK */
+	fsl,startup-delay-ms = <50>;
+};

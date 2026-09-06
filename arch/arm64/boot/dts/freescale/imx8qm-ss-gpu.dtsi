@@ -10,12 +10,13 @@
 };
 
 &gpu1_subsys {
-	imx8_gpu_ss: imx8_gpu1_ss {
+	imx8_gpu_ss: imx8_gpu1_ss@80000000 {
 		compatible = "fsl,imx8qm-gpu", "fsl,imx8-gpu-ss";
 		cores = <&gpu_3d0>, <&gpu_3d1>;
 		reg = <0x80000000 0x80000000>, <0x0 0x10000000>;
 		reg-names = "phys_baseaddr", "contiguous_mem";
 		depth-compression = <0>;
+		#cooling-cells = <2>;
 		/*<freq-kHz vol-uV>*/
 		operating-points = <
 			/*overdrive*/  800000  0  /*The first tuple is for core clock frequency*/
@@ -24,6 +25,6 @@
 				700000  0
 			/*underdrive*/ 400000  0  /*core/shader clock share the same frequency on underdrive mode*/
 		>;
-		status = "disabled";
+		throttle,max_state = <1>;
 	};
 };

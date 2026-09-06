@@ -93,6 +93,10 @@ int cdns_mhdp_audio_stop(struct cdns_mhdp_device *mhdp,
 {
 	int ret;
 
+	/* Remove Audio info frame */
+	if (audio->connector_type == DRM_MODE_CONNECTOR_HDMIA)
+		cdns_mhdp_infoframe_remove(mhdp, 1, HDMI_INFOFRAME_TYPE_AUDIO);
+
 	if (audio->connector_type == DRM_MODE_CONNECTOR_DisplayPort) {
 		ret = cdns_mhdp_reg_write(mhdp, AUDIO_PACK_CONTROL, 0);
 		if (ret) {
@@ -395,7 +399,6 @@ static const struct hdmi_codec_ops audio_codec_ops = {
 	.mute_stream = audio_mute_stream,
 	.get_eld = audio_get_eld,
 	.hook_plugged_cb = audio_hook_plugged_cb,
-	.no_capture_mute = 1,
 };
 
 int cdns_mhdp_register_audio_driver(struct device *dev)
@@ -406,6 +409,7 @@ int cdns_mhdp_register_audio_driver(struct device *dev)
 		.spdif = 1,
 		.ops = &audio_codec_ops,
 		.max_i2s_channels = 8,
+		.no_capture_mute = 1,
 	};
 
 	mhdp->audio_pdev = platform_device_register_data(

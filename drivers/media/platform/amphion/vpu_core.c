@@ -9,7 +9,7 @@
 #include <linux/list.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
@@ -17,7 +17,6 @@
 #include <linux/pm_runtime.h>
 #include <linux/pm_domain.h>
 #include <linux/firmware.h>
-#include <linux/vmalloc.h>
 #include "vpu.h"
 #include "vpu_defs.h"
 #include "vpu_core.h"
@@ -151,6 +150,12 @@ static int __vpu_alloc_dma(struct device *dev, struct vpu_buffer *buf)
 	if (!buf->virt)
 		return -ENOMEM;
 
+	if (buf->recorder) {
+		if (buf->label)
+			imx_mur_long_new_and_add(buf->recorder, buf->length, buf->label);
+		else
+			imx_mur_long_add(buf->recorder, buf->length);
+	}
 	buf->dev = dev;
 
 	return 0;
@@ -160,6 +165,13 @@ void vpu_free_dma(struct vpu_buffer *buf)
 {
 	if (!buf->virt || !buf->dev)
 		return;
+
+	if (buf->recorder) {
+		if (buf->label)
+			imx_mur_long_sub_and_del(buf->recorder, buf->length);
+		else
+			imx_mur_long_sub(buf->recorder, buf->length);
+	}
 
 	dma_free_coherent(buf->dev, buf->length, buf->virt, buf->phys);
 	buf->virt = NULL;
@@ -250,27 +262,28 @@ static void vpu_core_get_vpu(struct vpu_core *core)
 static int vpu_core_register(struct device *dev, struct vpu_core *core)
 {
 	struct vpu_dev *vpu = dev_get_drvdata(dev);
+	unsigned int buffer_size;
 	int ret = 0;
 
 	dev_dbg(core->dev, "register core %s\n", vpu_core_type_desc(core->type));
 	if (vpu_core_is_exist(vpu, core))
 		return 0;
 
-	core->workqueue = alloc_workqueue("vpu", WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
+	core->workqueue = alloc_ordered_workqueue("vpu", WQ_MEM_RECLAIM);
 	if (!core->workqueue) {
 		dev_err(core->dev, "fail to alloc workqueue\n");
 		return -ENOMEM;
 	}
 	INIT_WORK(&core->msg_work, vpu_msg_run_work);
 	INIT_DELAYED_WORK(&core->msg_delayed_work, vpu_msg_delayed_work);
-	core->msg_buffer_size = roundup_pow_of_two(VPU_MSG_BUFFER_SIZE);
-	core->msg_buffer = vzalloc(core->msg_buffer_size);
+	buffer_size = roundup_pow_of_two(VPU_MSG_BUFFER_SIZE);
+	core->msg_buffer = kzalloc(buffer_size, GFP_KERNEL);
 	if (!core->msg_buffer) {
 		dev_err(core->dev, "failed allocate buffer for fifo\n");
 		ret = -ENOMEM;
 		goto error;
 	}
-	ret = kfifo_init(&core->msg_fifo, core->msg_buffer, core->msg_buffer_size);
+	ret = kfifo_init(&core->msg_fifo, core->msg_buffer, buffer_size);
 	if (ret) {
 		dev_err(core->dev, "failed init kfifo\n");
 		goto error;
@@ -281,10 +294,8 @@ static int vpu_core_register(struct device *dev, struct vpu_core *core)
 
 	return 0;
 error:
-	if (core->msg_buffer) {
-		vfree(core->msg_buffer);
-		core->msg_buffer = NULL;
-	}
+	kfree(core->msg_buffer);
+	core->msg_buffer = NULL;
 	if (core->workqueue) {
 		destroy_workqueue(core->workqueue);
 		core->workqueue = NULL;
@@ -307,7 +318,7 @@ static int vpu_core_unregister(struct device *dev, struct vpu_core *core)
 
 	vpu_core_put_vpu(core);
 	core->vpu = NULL;
-	vfree(core->msg_buffer);
+	kfree(core->msg_buffer);
 	core->msg_buffer = NULL;
 
 	if (core->workqueue) {
@@ -562,6 +573,7 @@ static int vpu_core_parse_dt(struct vpu_core *core, struct device_node *np)
 	}
 	core->fw.phys = res.start;
 	core->fw.length = resource_size(&res);
+	imx_mur_long_new_and_add(core->vpu->recorder, core->fw.length, "fw");
 
 	of_node_put(node);
 
@@ -577,6 +589,7 @@ static int vpu_core_parse_dt(struct vpu_core *core, struct device_node *np)
 	}
 	core->rpc.phys = res.start;
 	core->rpc.length = resource_size(&res);
+	imx_mur_long_new_and_add(core->vpu->recorder, core->rpc.length, "rpc");
 
 	if (core->rpc.length < core->res->rpc_size + core->res->fwlog_size) {
 		dev_err(core->dev, "the rpc-region <%pad, 0x%x> is not enough\n",
@@ -642,7 +655,7 @@ static int vpu_core_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	core->type = core->res->type;
-	core->id = of_alias_get_id(dev->of_node, "vpu_core");
+	core->id = of_alias_get_id(dev->of_node, "vpu-core");
 	if (core->id < 0) {
 		dev_err(dev, "can't get vpu core id\n");
 		return core->id;
@@ -711,7 +724,7 @@ err_runtime_disable:
 	return ret;
 }
 
-static int vpu_core_remove(struct platform_device *pdev)
+static void vpu_core_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct vpu_core *core = platform_get_drvdata(pdev);
@@ -730,8 +743,6 @@ static int vpu_core_remove(struct platform_device *pdev)
 	memunmap(core->rpc.virt);
 	mutex_destroy(&core->lock);
 	mutex_destroy(&core->cmd_lock);
-
-	return 0;
 }
 
 static int __maybe_unused vpu_core_runtime_resume(struct device *dev)
@@ -830,7 +841,7 @@ static const struct dev_pm_ops vpu_core_pm_ops = {
 
 static struct vpu_core_resources imx8q_enc = {
 	.type = VPU_CORE_TYPE_ENC,
-	.fwname = "vpu/vpu_fw_imx8_enc.bin",
+	.fwname = "amphion/vpu/vpu_fw_imx8_enc.bin",
 	.stride = 16,
 	.max_width = 1920,
 	.max_height = 1920,
@@ -845,7 +856,7 @@ static struct vpu_core_resources imx8q_enc = {
 
 static struct vpu_core_resources imx8q_dec = {
 	.type = VPU_CORE_TYPE_DEC,
-	.fwname = "vpu/vpu_fw_imx8_dec.bin",
+	.fwname = "amphion/vpu/vpu_fw_imx8_dec.bin",
 	.stride = 256,
 	.max_width = 8188,
 	.max_height = 8188,

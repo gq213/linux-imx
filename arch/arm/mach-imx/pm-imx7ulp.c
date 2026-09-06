@@ -310,7 +310,7 @@ static void imx7ulp_port_pcr_save(void)
 	int i;
 	int j;
 	for (i = 0; i < 4; i++)
-		for (j=0; j < port_num[i]; j++)
+		for (j = 0; j < port_num[i]; j++)
 			port_pcr[i][j] = readl_relaxed(port_pcr_base[i] + j * 4);
 }
 
@@ -319,7 +319,7 @@ static void imx7ulp_port_pcr_restore(void)
 	int i;
 	int j;
 	for (i = 0; i < 4; i++)
-		for (j=0; j < port_num[i]; j++)
+		for (j = 0; j < port_num[i]; j++)
 			writel_relaxed(port_pcr[i][j], port_pcr_base[i] + j * 4);
 }
 
@@ -646,7 +646,7 @@ void __init imx7ulp_pm_map_io(void)
 	}
 }
 
-void __init imx7ulp_pm_common_init(const struct imx7ulp_pm_socdata
+static void __init imx7ulp_pm_common_init(const struct imx7ulp_pm_socdata
 				*socdata)
 {
 	struct device_node *np;

@@ -43,6 +43,7 @@
 #include <linux/module.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
+#include <linux/platform_device.h>
 #include <linux/kthread.h>
 #include <linux/io.h>
 #include <linux/if_arp.h>	/* arp_hdr_len() */
@@ -103,11 +104,6 @@ MODULE_PARM_DESC(debug, "Module/Driver verbosity level");
 static uint16_t tx_timeout = 1000;
 module_param(tx_timeout, ushort, S_IRUGO);
 MODULE_PARM_DESC(tx_timeout, "The Tx timeout in ms");
-
-static const char rtx[][3] = {
-	[RX] = "RX",
-	[TX] = "TX"
-};
 
 /* BM */
 
@@ -326,25 +322,31 @@ static void _dpa_tx_error(struct net_device		*net_dev,
 	dev_kfree_skb(skb);
 }
 
-/* Helper function to factor out frame validation logic on all Rx paths. Its
+/**
+ * _dpa_process_parse_results() - Process parse result for RX FD
+ *
+ * @parse_results: Pointer to structure holding the parse results of the frame
+ * @fd: Pointer to QMan frame descriptor structure
+ * @skb: Pointer to socket buffer which will have its ip_summed field
+ *	overwritten
+ * @use_gro: will only be written with 0, if the frame is definitely not
+ *	GRO-able; otherwise, it will be left unchanged
+ * @dcl4c_valid: if set, we assume no parser errors, since any error frame is
+ *	dropped before this function is called. When FMBM_RFNE[FDCS] is set, RX
+ *	checksum validation does not run and needs to be re-done in software,
+ *	which means we may get invalid frames.
+ *
+ * Helper function to factor out frame validation logic on all Rx paths. Its
  * purpose is to extract from the Parse Results structure information about
  * the integrity of the frame, its checksum, the length of the parsed headers
  * and whether the frame is suitable for GRO.
- *
- * Assumes no parser errors, since any error frame is dropped before this
- * function is called.
- *
- * @skb		will have its ip_summed field overwritten;
- * @use_gro	will only be written with 0, if the frame is definitely not
- *		GRO-able; otherwise, it will be left unchanged;
- * @hdr_size	will be written with a safe value, at least the size of the
- *		headers' length.
  */
 void __hot _dpa_process_parse_results(const fm_prs_result_t *parse_results,
 				      const struct qm_fd *fd,
-				      struct sk_buff *skb, int *use_gro)
+				      struct sk_buff *skb, bool *use_gro,
+				      bool dcl4c_valid)
 {
-	if (fd->status & FM_FD_STAT_L4CV) {
+	if (dcl4c_valid && fd->status & FM_FD_STAT_L4CV) {
 		/* The parser has run and performed L4 checksum validation.
 		 * We know there were no parser errors (and implicitly no
 		 * L4 csum error), otherwise we wouldn't be here.
@@ -360,7 +362,7 @@ void __hot _dpa_process_parse_results(const fm_prs_result_t *parse_results,
 		 * is currently TCP.
 		 */
 		if (!fm_l4_frame_is_tcp(parse_results))
-			*use_gro = 0;
+			*use_gro = false;
 
 		return;
 	}
@@ -372,7 +374,7 @@ void __hot _dpa_process_parse_results(const fm_prs_result_t *parse_results,
 	skb->ip_summed = CHECKSUM_NONE;
 
 	/* Bypass GRO for unknown traffic or if no PCDs are applied */
-	*use_gro = 0;
+	*use_gro = false;
 }
 
 int dpaa_eth_poll(struct napi_struct *napi, int budget)
@@ -380,11 +382,11 @@ int dpaa_eth_poll(struct napi_struct *napi, int budget)
 	struct dpa_napi_portal *np =
 			container_of(napi, struct dpa_napi_portal, napi);
 
-	int cleaned = qman_p_poll_dqrr(np->p, budget);
+	int cleaned = qman_p_poll_dqrr(np->p, budget, napi);
 
-	if (cleaned < budget) {
+	if (cleaned < budget && napi_complete_done(napi, cleaned)) {
 		int tmp;
-		napi_complete(napi);
+
 		tmp = qman_p_irqsource_add(np->p, QM_PIRQ_DQRI);
 		DPA_BUG_ON(tmp);
 	}
@@ -429,10 +431,11 @@ static void __hot _dpa_tx_conf(struct net_device	*net_dev,
 	dev_kfree_skb(skb);
 }
 
-enum qman_cb_dqrr_result
-priv_rx_error_dqrr(struct qman_portal		*portal,
-		      struct qman_fq			*fq,
-		      const struct qm_dqrr_entry	*dq)
+static enum qman_cb_dqrr_result priv_rx_error_dqrr(struct qman_portal *portal,
+						   struct qman_fq *fq,
+						   const struct qm_dqrr_entry *dq,
+						   bool sched_napi,
+						   struct qman_poll_ctx *ctx)
 {
 	struct net_device		*net_dev;
 	struct dpa_priv_s		*priv;
@@ -445,7 +448,7 @@ priv_rx_error_dqrr(struct qman_portal		*portal,
 	percpu_priv = raw_cpu_ptr(priv->percpu_priv);
 	count_ptr = raw_cpu_ptr(priv->percpu_count);
 
-	if (dpaa_eth_napi_schedule(percpu_priv, portal))
+	if (dpaa_eth_napi_schedule(percpu_priv, portal, sched_napi))
 		return qman_cb_dqrr_stop;
 
 	if (unlikely(dpaa_eth_refill_bpools(priv->dpa_bp, count_ptr)))
@@ -460,11 +463,10 @@ priv_rx_error_dqrr(struct qman_portal		*portal,
 	return qman_cb_dqrr_consume;
 }
 
-
-enum qman_cb_dqrr_result __hot
-priv_rx_default_dqrr(struct qman_portal		*portal,
-			struct qman_fq			*fq,
-			const struct qm_dqrr_entry	*dq)
+static enum qman_cb_dqrr_result __hot
+priv_rx_default_dqrr(struct qman_portal *portal, struct qman_fq *fq,
+		     const struct qm_dqrr_entry *dq, bool sched_napi,
+		     struct qman_poll_ctx *ctx)
 {
 	struct net_device		*net_dev;
 	struct dpa_priv_s		*priv;
@@ -476,15 +478,15 @@ priv_rx_default_dqrr(struct qman_portal		*portal,
 	priv = netdev_priv(net_dev);
 	dpa_bp = priv->dpa_bp;
 
-	/* Trace the Rx fd */
-	trace_dpa_rx_fd(net_dev, fq, &dq->fd);
-
 	/* IRQ handler, non-migratable; safe to use raw_cpu_ptr here */
 	percpu_priv = raw_cpu_ptr(priv->percpu_priv);
 	count_ptr = raw_cpu_ptr(priv->percpu_count);
 
-	if (unlikely(dpaa_eth_napi_schedule(percpu_priv, portal)))
+	if (unlikely(dpaa_eth_napi_schedule(percpu_priv, portal, sched_napi)))
 		return qman_cb_dqrr_stop;
+
+	/* Trace the Rx fd */
+	trace_dpa_rx_fd(net_dev, fq, &dq->fd);
 
 	/* Vale of plenty: make sure we didn't run out of buffers */
 
@@ -496,15 +498,15 @@ priv_rx_default_dqrr(struct qman_portal		*portal,
 		dpa_fd_release(net_dev, &dq->fd);
 	else
 		_dpa_rx(net_dev, portal, priv, percpu_priv, &dq->fd, fq->fqid,
-			count_ptr);
+			count_ptr, ctx);
 
 	return qman_cb_dqrr_consume;
 }
 
-enum qman_cb_dqrr_result
-priv_tx_conf_error_dqrr(struct qman_portal		*portal,
-		      struct qman_fq			*fq,
-		      const struct qm_dqrr_entry	*dq)
+static enum qman_cb_dqrr_result
+priv_tx_conf_error_dqrr(struct qman_portal *portal, struct qman_fq *fq,
+		        const struct qm_dqrr_entry *dq, bool sched_napi,
+		        struct qman_poll_ctx *ctx)
 {
 	struct net_device		*net_dev;
 	struct dpa_priv_s		*priv;
@@ -515,7 +517,7 @@ priv_tx_conf_error_dqrr(struct qman_portal		*portal,
 
 	percpu_priv = raw_cpu_ptr(priv->percpu_priv);
 
-	if (dpaa_eth_napi_schedule(percpu_priv, portal))
+	if (dpaa_eth_napi_schedule(percpu_priv, portal, sched_napi))
 		return qman_cb_dqrr_stop;
 
 	_dpa_tx_error(net_dev, priv, percpu_priv, &dq->fd, fq->fqid);
@@ -523,10 +525,10 @@ priv_tx_conf_error_dqrr(struct qman_portal		*portal,
 	return qman_cb_dqrr_consume;
 }
 
-enum qman_cb_dqrr_result __hot
-priv_tx_conf_default_dqrr(struct qman_portal		*portal,
-			struct qman_fq			*fq,
-			const struct qm_dqrr_entry	*dq)
+static enum qman_cb_dqrr_result __hot
+priv_tx_conf_default_dqrr(struct qman_portal *portal, struct qman_fq *fq,
+			  const struct qm_dqrr_entry *dq, bool sched_napi,
+			  struct qman_poll_ctx *ctx)
 {
 	struct net_device		*net_dev;
 	struct dpa_priv_s		*priv;
@@ -535,23 +537,22 @@ priv_tx_conf_default_dqrr(struct qman_portal		*portal,
 	net_dev = ((struct dpa_fq *)fq)->net_dev;
 	priv = netdev_priv(net_dev);
 
-	/* Trace the fd */
-	trace_dpa_tx_conf_fd(net_dev, fq, &dq->fd);
-
 	/* Non-migratable context, safe to use raw_cpu_ptr */
 	percpu_priv = raw_cpu_ptr(priv->percpu_priv);
 
-	if (dpaa_eth_napi_schedule(percpu_priv, portal))
+	if (dpaa_eth_napi_schedule(percpu_priv, portal, sched_napi))
 		return qman_cb_dqrr_stop;
+
+	/* Trace the fd */
+	trace_dpa_tx_conf_fd(net_dev, fq, &dq->fd);
 
 	_dpa_tx_conf(net_dev, priv, percpu_priv, &dq->fd, fq->fqid);
 
 	return qman_cb_dqrr_consume;
 }
 
-void priv_ern(struct qman_portal	*portal,
-		       struct qman_fq		*fq,
-		       const struct qm_mr_entry	*msg)
+static void priv_ern(struct qman_portal *portal, struct qman_fq *fq,
+		     const struct qm_mr_entry *msg)
 {
 	struct net_device	*net_dev;
 	const struct dpa_priv_s	*priv;
@@ -593,26 +594,24 @@ EXPORT_SYMBOL(private_fq_cbs);
 static void dpaa_eth_napi_enable(struct dpa_priv_s *priv)
 {
 	struct dpa_percpu_priv_s *percpu_priv;
-	int i, j;
+	int i;
 
 	for_each_possible_cpu(i) {
 		percpu_priv = per_cpu_ptr(priv->percpu_priv, i);
 
-		for (j = 0; j < qman_portal_max; j++)
-			napi_enable(&percpu_priv->np[j].napi);
+		napi_enable(&percpu_priv->np.napi);
 	}
 }
 
 static void dpaa_eth_napi_disable(struct dpa_priv_s *priv)
 {
 	struct dpa_percpu_priv_s *percpu_priv;
-	int i, j;
+	int i;
 
 	for_each_possible_cpu(i) {
 		percpu_priv = per_cpu_ptr(priv->percpu_priv, i);
 
-		for (j = 0; j < qman_portal_max; j++)
-			napi_disable(&percpu_priv->np[j].napi);
+		napi_disable(&percpu_priv->np.napi);
 	}
 }
 
@@ -659,16 +658,14 @@ static void dpaa_eth_poll_controller(struct net_device *net_dev)
 	struct dpa_priv_s *priv = netdev_priv(net_dev);
 	struct dpa_percpu_priv_s *percpu_priv =
 		raw_cpu_ptr(priv->percpu_priv);
-	struct qman_portal *p;
-	const struct qman_portal_config *pc;
 	struct dpa_napi_portal *np;
+	struct napi_struct *napi;
 
-	p = (struct qman_portal *)qman_get_affine_portal(smp_processor_id());
-	pc = qman_p_get_portal_config(p);
-	np = &percpu_priv->np[pc->index];
+	np = &percpu_priv->np;
+	napi = &np->napi;
 
 	qman_p_irqsource_remove(np->p, QM_PIRQ_DQRI);
-	qman_p_poll_dqrr(np->p, np->napi.weight);
+	qman_p_poll_dqrr(np->p, napi->weight, napi);
 	qman_p_irqsource_add(np->p, QM_PIRQ_DQRI);
 }
 #endif
@@ -686,35 +683,23 @@ static const struct net_device_ops dpa_private_ops = {
 #endif
 	.ndo_set_rx_mode = dpa_set_rx_mode,
 	.ndo_init = dpa_ndo_init,
-	.ndo_set_features = dpa_set_features,
-	.ndo_fix_features = dpa_fix_features,
 	.ndo_eth_ioctl = dpa_ioctl,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller = dpaa_eth_poll_controller,
 #endif
+	.ndo_set_features = dpa_set_features,
 };
 
 static int dpa_private_napi_add(struct net_device *net_dev)
 {
 	struct dpa_priv_s *priv = netdev_priv(net_dev);
 	struct dpa_percpu_priv_s *percpu_priv;
-	int i, cpu;
+	int cpu;
 
 	for_each_possible_cpu(cpu) {
 		percpu_priv = per_cpu_ptr(priv->percpu_priv, cpu);
 
-		percpu_priv->np = devm_kzalloc(net_dev->dev.parent,
-			qman_portal_max * sizeof(struct dpa_napi_portal),
-			GFP_KERNEL);
-
-		if (unlikely(percpu_priv->np == NULL)) {
-			dev_err(net_dev->dev.parent, "devm_kzalloc() failed\n");
-			return -ENOMEM;
-		}
-
-		for (i = 0; i < qman_portal_max; i++)
-			netif_napi_add(net_dev, &percpu_priv->np[i].napi,
-					dpaa_eth_poll);
+		netif_napi_add(net_dev, &percpu_priv->np.napi, dpaa_eth_poll);
 	}
 
 	return 0;
@@ -724,17 +709,12 @@ void dpa_private_napi_del(struct net_device *net_dev)
 {
 	struct dpa_priv_s *priv = netdev_priv(net_dev);
 	struct dpa_percpu_priv_s *percpu_priv;
-	int i, cpu;
+	int cpu;
 
 	for_each_possible_cpu(cpu) {
 		percpu_priv = per_cpu_ptr(priv->percpu_priv, cpu);
 
-		if (percpu_priv->np) {
-			for (i = 0; i < qman_portal_max; i++)
-				netif_napi_del(&percpu_priv->np[i].napi);
-
-			devm_kfree(net_dev->dev.parent, percpu_priv->np);
-		}
+		netif_napi_del(&percpu_priv->np.napi);
 	}
 }
 EXPORT_SYMBOL(dpa_private_napi_del);
@@ -764,8 +744,9 @@ static int dpa_private_netdev_init(struct net_device *net_dev)
 	net_dev->min_mtu = ETH_MIN_MTU;
 	net_dev->max_mtu = dpa_get_max_mtu();
 
-	net_dev->hw_features |= (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
-		NETIF_F_LLTX);
+	net_dev->hw_features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
+				NETIF_F_RXCSUM;
+	net_dev->lltx               = true;
 
 	/* Advertise S/G and HIGHDMA support for private interfaces */
 	net_dev->hw_features |= NETIF_F_SG | NETIF_F_HIGHDMA;
@@ -799,28 +780,21 @@ dpa_priv_bp_probe(struct device *dev)
 	return dpa_bp;
 }
 
-/* Place all ingress FQs (Rx Default, Rx Error, PCD FQs) in a dedicated CGR.
- * We won't be sending congestion notifications to FMan; for now, we just use
- * this CGR to generate enqueue rejections to FMan in order to drop the frames
- * before they reach our ingress queues and eat up memory.
- */
-static int dpaa_eth_priv_ingress_cgr_init(struct dpa_priv_s *priv)
+static int dpaa_eth_priv_ingress_cgr_init(struct qman_cgr *cgr, u64 cs_th)
 {
 	struct qm_mcc_initcgr initcgr;
-	u32 cs_th;
 	int err;
 
-	err = qman_alloc_cgrid(&priv->ingress_cgr.cgrid);
+	err = qman_alloc_cgrid(&cgr->cgrid);
 	if (err < 0) {
 		pr_err("Error %d allocating CGR ID\n", err);
-		goto out_error;
+		return err;
 	}
 
 	/* Enable CS TD, but disable Congestion State Change Notifications. */
 	memset(&initcgr, 0, sizeof(initcgr));
 	initcgr.we_mask = QM_CGR_WE_CS_THRES;
 	initcgr.cgr.cscn_en = QM_CGR_EN;
-	cs_th = CONFIG_FSL_DPAA_INGRESS_CS_THRESHOLD;
 	qm_cgr_cs_thres_set64(&initcgr.cgr.cs_thres, cs_th, 1);
 
 	initcgr.we_mask |= QM_CGR_WE_CSTD_EN;
@@ -829,16 +803,41 @@ static int dpaa_eth_priv_ingress_cgr_init(struct dpa_priv_s *priv)
 	/* This is actually a hack, because this CGR will be associated with
 	 * our affine SWP. However, we'll place our ingress FQs in it.
 	 */
-	err = qman_create_cgr(&priv->ingress_cgr, QMAN_CGR_FLAG_USE_INIT,
-		&initcgr);
+	err = qman_create_cgr(cgr, QMAN_CGR_FLAG_USE_INIT, &initcgr);
 	if (err < 0) {
 		pr_err("Error %d creating ingress CGR with ID %d\n", err,
-			priv->ingress_cgr.cgrid);
-		qman_release_cgrid(priv->ingress_cgr.cgrid);
-		goto out_error;
+			cgr->cgrid);
+		qman_release_cgrid(cgr->cgrid);
+		return err;
 	}
-	pr_debug("Created ingress CGR %d for netdev with hwaddr %pM\n",
-		 priv->ingress_cgr.cgrid, priv->mac_dev->addr);
+
+	return 0;
+}
+
+/* Place all ingress FQs (Rx Default, Rx Error, PCD FQs) in a dedicated CGR.
+ * We won't be sending congestion notifications to FMan; for now, we just use
+ * this CGR to generate enqueue rejections to FMan in order to drop the frames
+ * before they reach our ingress queues and eat up memory.
+ */
+static int dpaa_eth_priv_ingress_cgrs_init(struct dpa_priv_s *priv)
+{
+	int ret;
+
+	ret = dpaa_eth_priv_ingress_cgr_init(&priv->ingress_cgr,
+					     CONFIG_FSL_DPAA_INGRESS_CS_THRESHOLD);
+	if (ret)
+		return ret;
+
+	ret = dpaa_eth_priv_ingress_cgr_init(&priv->ingress_cgr_hi_prio,
+					     CONFIG_FSL_DPAA_INGRESS_HI_PRIO_CS_THRESHOLD);
+	if (ret) {
+		dpa_destroy_cgr(&priv->ingress_cgr);
+		return ret;
+	}
+
+	pr_debug("Created ingress CGR %d and hi prio CGR %d for netdev with hwaddr %pM\n",
+		 priv->ingress_cgr.cgrid, priv->ingress_cgr_hi_prio.cgrid,
+		 priv->mac_dev->addr);
 
 	/* struct qman_cgr allows special cgrid values (i.e. outside the 0..255
 	 * range), but we have no common initialization path between the
@@ -847,8 +846,7 @@ static int dpaa_eth_priv_ingress_cgr_init(struct dpa_priv_s *priv)
 	 */
 	priv->use_ingress_cgr = true;
 
-out_error:
-	return err;
+	return 0;
 }
 
 static int dpa_priv_bp_create(struct net_device *net_dev, struct dpa_bp *dpa_bp,
@@ -985,15 +983,6 @@ dpaa_eth_priv_probe(struct platform_device *_of_dev)
 	 */
 	dpa_bp->size = dpa_bp_size(&buf_layout[RX]);
 
-#ifdef CONFIG_FSL_DPAA_ETH_JUMBO_FRAME
-	/* We only want to use jumbo frame optimization if we actually have
-	 * L2 MAX FRM set for jumbo frames as well.
-	 */
-	if(fm_get_max_frm() < 9600)
-		dev_warn(dev,
-			"Invalid configuration: if jumbo frames support is on, FSL_FM_MAX_FRAME_SIZE should be set to 9600\n");
-#endif
-
 	INIT_LIST_HEAD(&priv->dpa_fq_list);
 
 	memset(&port_fqs, 0, sizeof(port_fqs));
@@ -1037,7 +1026,7 @@ dpaa_eth_priv_probe(struct platform_device *_of_dev)
 		dev_err(dev, "Error initializing CGR\n");
 		goto tx_cgr_init_failed;
 	}
-	err = dpaa_eth_priv_ingress_cgr_init(priv);
+	err = dpaa_eth_priv_ingress_cgrs_init(priv);
 	if (err < 0) {
 		dev_err(dev, "Error initializing ingress CGR\n");
 		goto rx_cgr_init_failed;
@@ -1124,11 +1113,10 @@ pfc_mapping_failed:
 #endif
 	dpa_fq_free(dev, &priv->dpa_fq_list);
 fq_alloc_failed:
-	qman_delete_cgr_safe(&priv->ingress_cgr);
-	qman_release_cgrid(priv->ingress_cgr.cgrid);
+	dpa_destroy_cgr(&priv->ingress_cgr);
+	dpa_destroy_cgr(&priv->ingress_cgr_hi_prio);
 rx_cgr_init_failed:
-	qman_delete_cgr_safe(&priv->cgr_data.cgr);
-	qman_release_cgrid(priv->cgr_data.cgr.cgrid);
+	dpa_destroy_cgr(&priv->cgr_data.cgr);
 tx_cgr_init_failed:
 get_channel_failed:
 	dpa_bp_free(priv);

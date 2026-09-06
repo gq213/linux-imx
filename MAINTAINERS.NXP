@@ -57,11 +57,11 @@ Maintainers List
 
 base
 M: Aisheng Dong <aisheng.dong@nxp.com>
-M: Li Yang <leoyang.li@nxp.com>
+M: Frank Li <frank.li@nxp.com>
 
 core
 M: Aisheng Dong <aisheng.dong@nxp.com>
-M: Li Yang <leoyang.li@nxp.com>
+M: Frank Li <frank.li@nxp.com>
 
 adc
 M: Haibo Chen <haibo.chen@nxp.com>
@@ -70,7 +70,7 @@ F: drivers/iio/adc/
 
 arch/core
 M: Dong Aisheng <aisheng.dong@nxp.com>
-M: Li Yang <leoyang.li@nxp.com>
+M: Frank Li <frank.li@nxp.com>
 F: arch/arm/
 X: arch/arm/boot/dts/
 X: arch/arm/mach-imx/
@@ -92,7 +92,7 @@ F: include/linux/mx8_mu.h
 F: include/soc/imx/
 
 arch/qoriq
-M: Li Yang <leoyang.li@nxp.com>
+M: Frank Li <frank.li@nxp.com>
 F: Documentation/devicetree/bindings/powerpc/fsl/
 F: arch/powerpc/platforms/
 F: arch/powerpc/sysdev/
@@ -213,22 +213,34 @@ F: drivers/net/can/
 
 capture/csi2-mixel
 M: G.n. Zhou <guoniu.zhou@nxp.com>
-F: Documentation/devicetree/bindings/media/imx8-mipi-csi.txt
-F: drivers/media/platform/imx8/mxc-mipi-csi2.h
-F: drivers/media/platform/imx8/mxc-mipi-csi2_yav.c
-F: drivers/staging/media/imx/imx8-mipi-csi2.c
+M: Alice Yuan <alice.yuan@nxp.com>
+F: Documentation/devicetree/bindings/media/nxp,imx8mq-mipi-csi2.yaml
+F: drivers/media/platform/nxp/imx8mq-mipi-csi2.c
 
 capture/csi2-samsung
 M: G.n. Zhou <guoniu.zhou@nxp.com>
+M: Alice Yuan <alice.yuan@nxp.com>
 F: drivers/media/platform/mxc/capture/mxc_mipi_csi.c
+F: drivers/media/platform/nxp/imx-mipi-csis.c
 F: drivers/staging/media/imx/imx8-mipi-csi2-sam.c
 
 capture/csi2-dwc
 M: G.n. Zhou <guoniu.zhou@nxp.com>
-F: drivers/staging/media/imx/dwc-mipi-csi2.c
+F: drivers/media/platform/nxp/dwc-mipi-csi2.c
+
+capture/csi-pixel-formatter
+M: G.n. Zhou <guoniu.zhou@nxp.com>
+F: drivers/media/platform/nxp/imx-csi-formatter.c
 
 capture/hdp
 M: Sandor Yu <sandor.yu@nxp.com>
+
+capture/imx519
+M: Mirela Rabulea <mirela.rabulea@nxp.com>
+R: Laurentiu Palcu <laurentiu.palcu@oss.nxp.com>
+R: Julien Vuillaumier <julien.vuillaumier@nxp.com>
+F: drivers/media/i2c/imx519.c
+F: Documentation/devicetree/bindings/media/i2c/sony,imx519.yaml
 
 capture/isi
 M: G.n. Zhou <guoniu.zhou@nxp.com>
@@ -278,9 +290,48 @@ M: G.n. Zhou <guoniu.zhou@nxp.com>
 F: drivers/media/i2c/mt9m114.c
 
 capture/pi
+M: Alice Yuan <alice.yuan@nxp.com>
+F: Documentation/devicetree/bindings/media/nxp,imx-parallel-csi.yaml
+F: drivers/media/platform/nxp/imx-parallel-csi.c
+
+capture/csi
+M: Alice Yuan <alice.yuan@nxp.com>
+F: drivers/media/platform/nxp/imx7-media-csi.c
+
+capture/ox05b1s
+M: Mirela Rabulea <mirela.rabulea@nxp.com>
+F: drivers/media/i2c/ox05b1s/*
+F: Documentation/devicetree/bindings/media/i2c/ovti,ox05b1s.yaml
+
+capture/ox03c10
+M: Laurentiu Palcu <laurentiu.palcu@oss.nxp.com>
+R: Robert Chiras <robert.chiras@nxp.com>
+R: Mirela Rabulea <mirela.rabulea@nxp.com>
+R: Oliver Brown <oliver.brown@nxp.com>
+R: G.n. Zhou <guoniu.zhou@nxp.com>
+F: drivers/media/i2c/mx95mbcam.c
+F: Documentation/devicetree/bindings/media/i2c/nxp,mx95mbcam.yaml
+F: drivers/media/i2c/ox03c10*
+F: include/uapi/linux/ox03c10.h
+F: drivers/media/i2c/max96717*
+F: drivers/media/i2c/max96724*
+F: Documentation/devicetree/bindings/media/i2c/maxim,max96724.yaml
+
+capture/ds90ub
 M: G.n. Zhou <guoniu.zhou@nxp.com>
-F: Documentation/devicetree/bindings/media/imx8-parallel-csi.txt
-F: drivers/staging/media/imx/imx8-parallel-csi.c
+F: Documentation/devicetree/bindings/media/i2c/ti,ds90*
+F: drivers/media/i2c/ds90*
+F: include/media/i2c/ds90*
+
+capture/neoisp
+M: Antoine Bouyer <antoine.bouyer@nxp.com>
+M: Julien Vuillaumier <julien.vuillaumier@nxp.com>
+F: arch/arm64/boot/dts/freescale/imx95-19x19-evk-neoisp.dtso
+F: Documentation/admin-guide/media/nxp-neoisp*
+F: Documentation/devicetree/bindings/media/nxp,imx95-neoisp.yaml
+F: Documentation/userspace-api/media/v4l/metafmt-nxp-neoisp.rst
+F: drivers/media/platform/nxp/neoisp/neoisp*
+F: include/uapi/linux/media/nxp/nxp_neoisp.h
 
 clock/imx
 M: Jacky Bai <jacky.bai@nxp.com>
@@ -304,18 +355,18 @@ F: include/dt-bindings/clock/s32v234-clock.h
 
 config/arm
 M: Dong Aisheng <aisheng.dong@nxp.com>
-M: Li Yang <leoyang.li@nxp.com>
+M: Frank Li <frank.li@nxp.com>
 M: Ionut Vicovan <ionut.vicovan@nxp.com>
 F: arch/arm/configs/
 
 config/arm64
 M: Dong Aisheng <aisheng.dong@nxp.com>
-M: Li Yang <leoyang.li@nxp.com>
+M: Frank Li <frank.li@nxp.com>
 M: Ionut Vicovan <ionut.vicovan@nxp.com>
 F: arch/arm64/configs/
 
 config/powerpc
-M: Li Yang <leoyang.li@nxp.com>
+M: Frank Li <frank.li@nxp.com>
 F: arch/powerpc/configs/
 
 crypto/core
@@ -357,6 +408,12 @@ F: Documentation/devicetree/bindings/display/bridge/
 F: drivers/gpu/drm/bridge/
 F: include/drm/bridge/
 
+display/dcif
+M: Laurentiu Palcu <laurentiu.palcu@nxp.com>
+M: Ying Liu <victor.liu@nxp.com>
+F: Documentation/devicetree/bindings/display/imx/nxp,imx94-dcif.yaml
+F: drivers/gpu/drm/imx/dcif/
+
 display/dcnano
 M: Ying Liu <victor.liu@nxp.com>
 F: Documentation/devicetree/bindings/display/imx/nxp,imx8ulp-dcnano.yaml
@@ -378,6 +435,13 @@ F: Documentation/devicetree/bindings/display/imx/fsl-imx-drm.txt
 F: drivers/gpu/drm/imx/dpu/
 F: drivers/gpu/imx/dpu/
 F: include/video/dpu.h
+
+display/dpu95
+M: Ying Liu <victor.liu@nxp.com>
+M: Laurentiu Palcu <laurentiu.palcu@nxp.com>
+M: Guangliu Ding <guangliu.ding@nxp.com>
+F: Documentation/devicetree/bindings/display/imx/nxp,imx95-dpu.yaml
+F: drivers/gpu/drm/imx/dpu95/
 
 display/dpu-blit
 M: Xianzhong Li <xianzhong.li@nxp.com>
@@ -539,10 +603,6 @@ F: drivers/dma/imx-sdma.c
 F: include/linux/platform_data/dma-imx-sdma.h
 F: include/linux/dma/imx-dma.h
 
-drivers/tee/crypto
-M: Pankaj Gupta <pankaj.gupta@nxp.com>
-F: drivers/tee/crypto/*
-
 dts/imx6
 M: Dong Aisheng <aisheng.dong@nxp.com>
 F: arch/arm/boot/dts/imx*
@@ -569,7 +629,7 @@ M: Jacky Bai <ping.bai@nxp.com>
 F: arch/arm64/boot/dts/freescale/imx8ulp*
 
 dts/imx8
-M: Viorel Suman <viorel.suman@nxp.com>
+M: Frank Li <frank.li@nxp.com>
 F: arch/arm64/boot/dts/freescale/imx8-ss-*
 F: arch/arm64/boot/dts/freescale/imx8d*
 F: arch/arm64/boot/dts/freescale/imx8q*
@@ -581,7 +641,7 @@ R: Peng Fan <peng.fan@nxp.com>
 F: arch/arm64/boot/dts/freescale/imx9*
 
 dts/qoriq
-M: Li Yang <leoyang.li@nxp.com>
+M: Frank Li <frank.li@nxp.com>
 F: Documentation/devicetree/bindings/arm/freescale/fsl,layerscape-dcfg.txt
 F: Documentation/devicetree/bindings/arm/fsl.yaml
 F: arch/arm/boot/dts/ls1021a-qds.dts
@@ -592,7 +652,7 @@ F: arch/arm64/boot/dts/freescale/qoriq*
 F: arch/powerpc/boot/dts/
 
 dts/s32
-M: Li Yang <leoyang.li@nxp.com>
+M: Frank Li <frank.li@nxp.com>
 F: arch/arm64/boot/dts/freescale/s32*
 
 edac
@@ -629,12 +689,15 @@ F: Documentation/devicetree/bindings/rng/
 F: drivers/char/hw_random/
 
 i2c
-M: Clark Wang <xiaoning.wang@nxp.com>
+M: Carlos Song <carlos.song@nxp.com>
+R: Clark Wang <xiaoning.wang@nxp.com>
 F: Documentation/devicetree/bindings/i2c/
 F: drivers/i2c/
 
 i3c
-M: Clark Wang <xiaoning.wang@nxp.com>
+M: Carlos Song <carlos.song@nxp.com>
+M: Frank Li <Frank.Li@nxp.com>
+R: Clark Wang <xiaoning.wang@nxp.com>
 F: Documentation/devicetree/bindings/i3c/
 F: drivers/i3c/
 
@@ -689,7 +752,14 @@ F: include/uapi/linux/dma-buf.h
 
 mxc/gpu
 M: Xianzhong Li <xianzhong.li@nxp.com>
+M: Jiyu Yang <jiyu.yang@nxp.com>
+L: gpusw-devel@nxp.com
 F: drivers/mxc/gpu-viv/
+F: drivers/gpu/arm/
+F: drivers/gpu/arm/midgard/
+F: drivers/gpu/arm/mgm/
+F: drivers/gpu/arm/pma/
+F: Documentation/devicetree/bindings/gpu/arm,mali-*
 
 mxc/hdmi
 M: Sandor Yu <Sandor.yu@nxp.com>
@@ -737,10 +807,38 @@ F: drivers/memory/fsl_ifc.c
 F: drivers/mtd/nand/raw/gpmi-nand/
 F: include/linux/fsl_ifc.h
 
-net/dpaa1
-M: Camelia Groza <camelia.groza@nxp.com>
+net/phy
+M: Clark Wang <xiaoning.wang@nxp.com>
+M: Ioana Ciornei <ioana.ciornei@nxp.com>
+M: Vladimir Oltean <vladimir.oltean@nxp.com>
+R: Wei Fang <wei.fang@nxp.com>
+F: Documentation/devicetree/bindings/phy/inphi,in112525.yaml
+F: Documentation/devicetree/bindings/phy/ti,ds125df111.yaml
+F: drivers/net/pcs/
+F: drivers/net/phy/
+F: drivers/phy/inphi/
+F: drivers/phy/freescale/phy-fsl-lynx-*.c
+F: drivers/phy/freescale/phy-fsl-lynx-xgkr-algorithm.h
+F: drivers/phy/ti/phy-ds125df111.c
+F: drivers/soc/fsl/guts.c
+F: include/linux/fsl/guts.h
+F: include/linux/mii.h
+F: include/linux/phy.h
+F: include/linux/phy/phy-ethernet.h
+F: include/linux/phy/phy-fsl-lynx.h
+
+net/tsn
+M: Xiaoliang Yang <xiaoliang.yang_1@nxp.com>
+M: Vladimir Oltean <vladimir.oltean@nxp.com>
 R: Wei Fang <wei.fang@nxp.com>
 R: Clark Wang <xiaoning.wang@nxp.com>
+F: include/net/tsn.h
+F: include/uapi/linux/tsn.h
+F: net/tsn/
+
+net/dpaa1
+M: Vladimir Oltean <vladimir.oltean@nxp.com>
+M: Ioana Ciornei <ioana.ciornei@nxp.com>
 R: Madalin Bucur <madalin.bucur@oss.nxp.com>
 F: drivers/net/ethernet/freescale/sdk_dpaa/
 F: drivers/net/ethernet/freescale/sdk_fman/
@@ -753,8 +851,7 @@ F: include/uapi/linux/fmd/
 
 net/dpaa2
 M: Ioana Ciornei <ioana.ciornei@nxp.com>
-R: Wei Fang <wei.fang@nxp.com>
-R: Clark Wang <xiaoning.wang@nxp.com>
+R: Vladimir Oltean <vladimir.oltean@nxp.com>
 R: Madalin Bucur <madalin.bucur@oss.nxp.com>
 F: Documentation/ABI/stable/sysfs-bus-fsl-mc
 F: drivers/bus/fsl-mc/
@@ -801,6 +898,15 @@ net/ls1028-switch
 M: Vladimir Oltean <vladimir.oltean@nxp.com>
 F: drivers/net/ethernet/mscc/ocelot.c
 
+net/netc-switch
+M: Wei Fang <wei.fang@nxp.com>
+R: Vladimir Oltean <vladimir.oltean@nxp.com>
+R: Claudiu Manoil <claudiu.manoil@nxp.com>
+R: Clark Wang <xiaoning.wang@nxp.com>
+F: drivers/net/dsa/netc/
+F: include/linux/dsa/tag_netc.h
+F: net/dsa/tag_netc.c
+
 net/pfe
 M: Chaitanya Sakinam <Chaitanya.sakinam@nxp.com>
 R: Wei Fang <wei.fang@nxp.com>
@@ -809,26 +915,10 @@ R: Madalin Bucur <madalin.bucur@oss.nxp.com>
 F: Documentation/devicetree/bindings/net/fsl_ppfe/pfe.txt
 F: drivers/staging/fsl_ppfe/
 
-net/phy
-M: Wei Fang <wei.fang@nxp.com>
-R: Clark Wang <xiaoning.wang@nxp.com>
-R: Florin Chiculita <florinlaurentiu.chiculita@nxp.com>
-F: drivers/net/phy/
-F: include/linux/phy.h
-
 net/ptp
 M: Wei Fang <wei.fang@nxp.com>
 R: Clark Wang <xiaoning.wang@nxp.com>
 F: drivers/ptp/
-
-net/tsn
-M: Xiaoliang Yang <xiaoliang.yang_1@nxp.com>
-M: Vladimir Oltean <vladimir.oltean@nxp.com>
-R: Wei Fang <wei.fang@nxp.com>
-R: Clark Wang <xiaoning.wang@nxp.com>
-F: include/net/tsn.h
-F: include/uapi/linux/tsn.h
-F: net/tsn/
 
 net/tsn-switch
 M: Xiaoliang Yang <xiaoliang.yang_1@nxp.com>
@@ -841,6 +931,11 @@ F: drivers/nfc/
 npu
 M: Alison Wang <alison.wang@nxp.com>
 F: drivers/staging/ethosu/
+
+neutron
+M: Jiwei Fu <jiwei.fu@nxp.com>
+F: drivers/staging/neutron/
+F: drivers/remoteproc/imx_neutron_rproc.c
 
 pcie/core
 M: Richard Zhu <hongxing.zhu@nxp.com>
@@ -864,6 +959,11 @@ pcie/dwc-qoriq
 M: Z.q. Hou <zhiqiang.hou@nxp.com>
 F: Documentation/devicetree/bindings/pci/layerscape-pci.txt
 F: drivers/pci/controller/dwc/pci-layerscape*
+
+pcie/rpmsg
+M: Wei Fang <wei.fang@nxp.com>
+R: Clark Wang <xiaoning.wang@nxp.com>
+F: drivers/pci/controller/pci-nxp-rpmsg.c
 
 perf
 M: Xu Yang <xu.yang_2@nxp.com>
@@ -909,6 +1009,7 @@ F: drivers/soc/fsl/rcpm.c
 
 pxp
 M: G.n. Zhou <guoniu.zhou@nxp.com>
+F: Documentation/devicetree/bindings/dma/fsl,imx-pxp-dma.yaml
 F: drivers/dma/pxp/
 F: drivers/media/platform/mxc/output/mxc_pxp_v4l2.c
 F: drivers/media/platform/mxc/output/mxc_pxp_v4l2.h
@@ -955,9 +1056,8 @@ M: Richard Zhu <hongxing.zhu@nxp.com>
 F: drivers/ata/
 
 script
-M: Ting Liu <ting.liu@nxp.com>
 M: Aisheng Dong <aisheng.dong@nxp.com>
-M: Li Yang <leoyang.li@nxp.com>
+M: Frank Li <frank.li@nxp.com>
 F: MAINTAINERS.NXP
 F: scripts/get_maintainer_nxp.sh
 
@@ -982,12 +1082,14 @@ M: Peng Fan <peng.fan@nxp.com>
 F: drivers/iommu/
 
 spi/cspi
-M: Clark Wang <xiaoning.wang@nxp.com>
+M: Carlos Song <carlos.song@nxp.com>
+R: Clark Wang <xiaoning.wang@nxp.com>
 F: drivers/spi/spi-imx.c
 
 spi/dspi
-M: Clark Wang <xiaoning.wang@nxp.com>
 M: Han Xu <han.xu@nxp.com>
+R: Carlos Song <carlos.song@nxp.com>
+R: Clark Wang <xiaoning.wang@nxp.com>
 F: Documentation/devicetree/bindings/spi/spi-fsl-dspi.txt
 F: drivers/spi/spi-fsl-dspi.c
 
@@ -998,7 +1100,8 @@ F: Documentation/devicetree/bindings/spi/spi-nxp-fspi.txt
 F: drivers/spi/spi-nxp-fspi.c
 
 spi/lpspi
-M: Clark Wang <xiaoning.wang@nxp.com>
+M: Carlos Song <carlos.song@nxp.com>
+R: Clark Wang <xiaoning.wang@nxp.com>
 F: Documentation/devicetree/bindings/spi/spi-fsl-lpspi.yaml
 F: drivers/spi/spi-fsl-lpspi.c
 
@@ -1009,11 +1112,16 @@ F: Documentation/devicetree/bindings/spi/spi-fsl-qspi.txt
 F: drivers/spi/spi-fsl-qspi.c
 F: drivers/mtd/spi-nor/spansion.c
 
+spi/xspi
+M: Han Xu <han.xu@nxp.com>
+M: Haibo Chen <haibo.chen@nxp.com>
+F: Documentation/devicetree/bindings/spi/spi-nxp-xspi.yaml
+F: drivers/spi/spi-nxp-xspi.c
+
 thermal
 M: Jacky Bai <ping.bai@nxp.com>
 M: Alice Guo <alice.guo@nxp.com>
 F: drivers/thermal/
-F: include/linux/device_cooling.h
 
 timer
 M: Jacky Bai <ping.bai@nxp.com>
@@ -1091,9 +1199,9 @@ M: Ying Liu <victor.liu@nxp.com>
 F: drivers/pwm/
 
 tee
-M: Clement Faure <clement.faure@nxp.com>
+M: Sahil Malhotra <sahil.malhotra@nxp.com>
 F: drivers/tee/optee/
 
 hotfix
 M: Aisheng Dong <aisheng.dong@nxp.com>
-M: Li Yang <leoyang.li@nxp.com>
+M: Frank Li <frank.li@nxp.com>

@@ -213,6 +213,9 @@ void mii_ethtool_get_link_ksettings(struct mii_if_info *mii,
 		lp_advertising = 0;
 	}
 
+	if (!(bmsr & BMSR_LSTATUS))
+		cmd->base.speed = SPEED_UNKNOWN;
+
 	mii->full_duplex = cmd->base.duplex;
 
 	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported,
@@ -657,8 +660,8 @@ static const enum ethtool_link_mode_bit_indices c73_linkmodes[] = {
 	ETHTOOL_LINK_MODE_40000baseKR4_Full_BIT,
 	ETHTOOL_LINK_MODE_25000baseKR_Full_BIT,
 	ETHTOOL_LINK_MODE_25000baseCR_Full_BIT,
-	/* ETHTOOL_LINK_MODE_25000baseKR_S_Full_BIT not supported */
-	/* ETHTOOL_LINK_MODE_25000baseCR_S_Full_BIT not supported */
+	ETHTOOL_LINK_MODE_25000baseKR_S_Full_BIT,
+	ETHTOOL_LINK_MODE_25000baseCR_S_Full_BIT,
 	ETHTOOL_LINK_MODE_10000baseKR_Full_BIT,
 	ETHTOOL_LINK_MODE_10000baseKX4_Full_BIT,
 	ETHTOOL_LINK_MODE_1000baseKX_Full_BIT,

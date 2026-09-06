@@ -1,4 +1,5 @@
 /* Copyright 2008-2012 Freescale Semiconductor, Inc.
+ * Copyright 2019-2023 NXP
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -29,8 +30,13 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "qman_low.h"
 #include <linux/dma-map-ops.h>
+#include <linux/netdevice.h>
+#include <linux/platform_device.h>
+#include <linux/types.h>
+#include <net/gro.h>
+
+#include "qman_low.h"
 
 /* Compilation constants */
 #define DQRR_MAXFILL	15
@@ -66,6 +72,11 @@
 		if (fq_isset(__fq478, QMAN_FQ_FLAG_LOCKED)) \
 			spin_unlock(&__fq478->fqlock); \
 	} while (0)
+
+struct qman_poll_ctx {
+	const struct napi_struct *active_napi;
+	struct list_head unscheduled_gro_napis;
+};
 
 static inline void fq_set(struct qman_fq *fq, u32 mask)
 {
@@ -189,17 +200,6 @@ static inline void put_affine_portal(void)
 {
 	put_cpu_var(qman_affine_portal);
 }
-/* Exception: poll functions assume the caller is cpu-affine and in no risk of
- * re-entrance, which are the two reasons we usually use the get/put_cpu_var()
- * semantic - ie. to disable pre-emption. Some use-cases expect the execution
- * context to remain as non-atomic during poll-triggered callbacks as it was
- * when the poll API was first called (eg. NAPI), so we go out of our way in
- * this case to not disable pre-emption. */
-static inline struct qman_portal *get_poll_portal(void)
-{
-	return &get_cpu_var(qman_affine_portal);
-}
-#define put_poll_portal()
 
 /* This gives a FQID->FQ lookup to cover the fact that we can't directly demux
  * retirement notifications (the fact they are sometimes h/w-consumed means that
@@ -311,21 +311,6 @@ static inline void hw_fqd_to_cpu(struct qm_fqd *fqd)
 }
 
 /* Swap a 40 bit address */
-static inline u64 cpu_to_be40(u64 in)
-{
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-	return in;
-#else
-	u64 out = 0;
-	u8 *p = (u8 *) &out;
-	p[0] = in >> 32;
-	p[1] = in >> 24;
-	p[2] = in >> 16;
-	p[3] = in >> 8;
-	p[4] = in >> 0;
-	return out;
-#endif
-}
 static inline u64 be40_to_cpu(u64 in)
 {
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -447,38 +432,52 @@ static inline void hw_ccgr_query_to_cpu(struct qm_mcr_ceetm_ccgr_query *ccgr_q)
 			be32_to_cpu(ccgr_q->cm_query.cscn_targ_swp[i]);
 }
 
-/* In the case that slow- and fast-path handling are both done by qman_poll()
- * (ie. because there is no interrupt handling), we ought to balance how often
- * we do the fast-path poll versus the slow-path poll. We'll use two decrementer
- * sources, so we call the fast poll 'n' times before calling the slow poll
- * once. The idle decrementer constant is used when the last slow-poll detected
- * no work to do, and the busy decrementer constant when the last slow-poll had
- * work to do. */
-#define SLOW_POLL_IDLE   1000
-#define SLOW_POLL_BUSY   10
+void qman_enable_irqs(void)
+{
+	const cpumask_t *cpus = qman_affine_cpus();
+	struct qman_portal *p;
+	int cpu;
+
+	for_each_cpu(cpu, cpus) {
+		p = affine_portals[cpu];
+		if (p) {
+			qm_isr_status_clear(&p->p, 0xffffffff);
+			qm_isr_uninhibit(&p->p);
+		}
+	}
+	pr_debug("QMan: IRQs enabled\n");
+}
+
 static u32 __poll_portal_slow(struct qman_portal *p, u32 is);
 static inline unsigned int __poll_portal_fast(struct qman_portal *p,
-					unsigned int poll_limit);
+					      unsigned int poll_limit,
+					      bool sched_napi,
+					      struct qman_poll_ctx *ctx);
 
 /* Portal interrupt handler */
 static irqreturn_t portal_isr(__always_unused int irq, void *ptr)
 {
 	struct qman_portal *p = ptr;
-	/*
-	 * The CSCI/CCSCI source is cleared inside __poll_portal_slow(), because
-	 * it could race against a Query Congestion State command also given
-	 * as part of the handling of this interrupt source. We mustn't
+	u32 clear = 0, is;
+
+	is = qm_isr_status_read(&p->p) & p->irq_sources;
+
+	/* DQRR-handling if it's interrupt-driven */
+	if (is & QM_PIRQ_DQRI) {
+		__poll_portal_fast(p, CONFIG_FSL_QMAN_POLL_LIMIT, true, NULL);
+		clear = QM_DQAVAIL_MASK | QM_PIRQ_DQRI;
+	}
+
+	/* Handling of anything else that's interrupt-driven.
+	 * The CSCI/CCSCI source is cleared inside __poll_portal_slow(),
+	 * because it could race against a Query Congestion State command also
+	 * given as part of the handling of this interrupt source. We mustn't
 	 * clear it a second time in this top-level function.
 	 */
-	u32 clear = QM_DQAVAIL_MASK | (p->irq_sources &
-		~(QM_PIRQ_CSCI | QM_PIRQ_CCSCI));
-	u32 is = qm_isr_status_read(&p->p) & p->irq_sources;
-	/* DQRR-handling if it's interrupt-driven */
-	if (is & QM_PIRQ_DQRI)
-		__poll_portal_fast(p, CONFIG_FSL_QMAN_POLL_LIMIT);
-	/* Handling of anything else that's interrupt-driven */
-	clear |= __poll_portal_slow(p, is);
+	clear |= __poll_portal_slow(p, is) & QM_PIRQ_SLOW;
+
 	qm_isr_status_clear(&p->p, clear);
+
 	return IRQ_HANDLED;
 }
 
@@ -493,10 +492,11 @@ static inline void qman_stop_dequeues_ex(struct qman_portal *p)
 	PORTAL_IRQ_UNLOCK(p, irqflags);
 }
 
-static int drain_mr_fqrni(struct qm_portal *p)
+int drain_mr_fqrni(struct qm_portal *p)
 {
 	const struct qm_mr_entry *msg;
 loop:
+	qm_mr_pvb_update(p);
 	msg = qm_mr_current(p);
 	if (!msg) {
 		/* if MR was full and h/w had other FQRNI entries to produce, we
@@ -511,10 +511,8 @@ loop:
 		 * one entry at a time, so h/w has an opportunity to produce new
 		 * entries well before the ring has been fully consumed, so
 		 * we're being *really* paranoid here. */
-		u64 now, then = mfatb();
-		do {
-			now = mfatb();
-		} while ((then + 10000) > now);
+		mdelay(1);
+		qm_mr_pvb_update(p);
 		msg = qm_mr_current(p);
 		if (!msg)
 			return 0;
@@ -528,6 +526,7 @@ loop:
 	qm_mr_cci_consume(p, 1);
 	goto loop;
 }
+EXPORT_SYMBOL(drain_mr_fqrni);
 
 #ifdef CONFIG_SUSPEND
 static int _qman_portal_suspend_noirq(struct device *dev)
@@ -570,7 +569,8 @@ struct dev_pm_domain qman_portal_device_pm_domain = {
 struct qman_portal *qman_create_portal(
 			struct qman_portal *portal,
 			const struct qm_portal_config *config,
-			const struct qman_cgrs *cgrs)
+			const struct qman_cgrs *cgrs,
+			bool need_cleanup)
 {
 	struct qm_portal *__p;
 	char buf[16];
@@ -588,15 +588,7 @@ struct qman_portal *qman_create_portal(
 
 	__p = &portal->p;
 
-#if (defined CONFIG_PPC || defined CONFIG_PPC64) && defined CONFIG_FSL_PAMU
-        /* PAMU is required for stashing */
-        portal->use_eqcr_ci_stashing = ((qman_ip_rev >= QMAN_REV30) ?
-					1 : 0);
-#elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 	portal->use_eqcr_ci_stashing = 1;
-#else
-        portal->use_eqcr_ci_stashing = 0;
-#endif
 
 	/* prep the low-level portal struct with the mapped addresses from the
 	 * config, everything that follows depends on it and "config" is more
@@ -685,7 +677,7 @@ struct qman_portal *qman_create_portal(
 		goto fail_devregister;
 	}
 
-	arch_setup_dma_ops(&portal->pdev->dev, 0, 0, NULL, true);
+	arch_setup_dma_ops(&portal->pdev->dev, true);
 
 	portal->pdev->dev.pm_domain = &qman_portal_device_pm_domain;
 	portal->pdev->dev.platform_data = portal;
@@ -694,8 +686,8 @@ struct qman_portal *qman_create_portal(
 	qm_isr_disable_write(__p, isdr);
 	portal->irq_sources = 0;
 	qm_isr_enable_write(__p, portal->irq_sources);
-	qm_isr_status_clear(__p, 0xffffffff);
 	snprintf(portal->irqname, MAX_IRQNAME, IRQNAME, config->public_cfg.cpu);
+	qm_isr_inhibit(__p);
 	if (request_irq(config->public_cfg.irq, portal_isr, 0, portal->irqname,
 				portal)) {
 		pr_err("request_irq() failed\n");
@@ -743,8 +735,12 @@ struct qman_portal *qman_create_portal(
 	 * If left enabled they cause problems with sleep mode. Since
 	 * they are not used in push mode we can safely turn them off
 	 */
+	qm_isr_status_clear(__p, 0xffffffff);
 	qm_isr_disable_write(__p, QM_DQAVAIL_MASK);
-	qm_isr_uninhibit(__p);
+	if (!need_cleanup) {
+		pr_info("QMan doesn't need cleanup, uninhibiting IRQs\n");
+		qm_isr_uninhibit(__p);
+	}
 	/* Write a sane SDQCR */
 	qm_dqrr_sdqcr_set(__p, portal->sdqcr);
 	return portal;
@@ -776,15 +772,40 @@ fail_eqcr:
 	return NULL;
 }
 
+#ifdef CONFIG_FSL_DPAA_ETHERCAT
+static struct qman_portal ethercat_portal[NR_CPUS];
+static u16 ethercat_channel[NR_CPUS];
+static DEFINE_SPINLOCK(ethercat_mask_lock);
+
+struct qman_portal *qman_create_affine_portal_ethercat
+			(const struct qm_portal_config *config,
+			const struct qman_cgrs *cgrs, int cpu, 
+			bool need_cleanup)
+{
+	struct qman_portal *res;
+	struct qman_portal *portal = NULL;
+
+	portal = &ethercat_portal[cpu];
+	res = qman_create_portal(portal, config, cgrs, need_cleanup);
+	if (res) {
+		spin_lock(&ethercat_mask_lock);
+		ethercat_channel[cpu] = config->public_cfg.channel;
+		spin_unlock(&ethercat_mask_lock);
+	}
+	return res;
+}
+#endif
+
 struct qman_portal *qman_create_affine_portal(
 			const struct qm_portal_config *config,
-			const struct qman_cgrs *cgrs)
+			const struct qman_cgrs *cgrs,
+			bool need_cleanup)
 {
 	struct qman_portal *res;
 	struct qman_portal *portal;
 
 	portal = &per_cpu(qman_affine_portal, config->public_cfg.cpu);
-	res = qman_create_portal(portal, config, cgrs);
+	res = qman_create_portal(portal, config, cgrs, need_cleanup);
 	if (res) {
 		spin_lock(&affine_mask_lock);
 		cpumask_set_cpu(config->public_cfg.cpu, &affine_mask);
@@ -899,6 +920,27 @@ const struct qman_portal_config *qman_get_portal_config(void)
 	return ret;
 }
 EXPORT_SYMBOL(qman_get_portal_config);
+
+struct qm_portal *qm_get_portal_for_channel(u16 channel)
+{
+	const cpumask_t *cpus = qman_affine_cpus();
+	const struct qman_portal_config *pcfg;
+	struct qman_portal *p;
+	int cpu;
+
+	for_each_cpu(cpu, cpus) {
+		p = affine_portals[cpu];
+		if (!p)
+			continue;
+
+		pcfg = qman_p_get_portal_config(p);
+		if (pcfg->channel == channel)
+			return &p->p;
+	}
+
+	return NULL;
+}
+EXPORT_SYMBOL(qm_get_portal_for_channel);
 
 /* Inline helper to reduce nesting in __poll_portal_slow() */
 static inline void fq_state_change(struct qman_portal *p, struct qman_fq *fq,
@@ -1151,7 +1193,7 @@ static inline void safe_copy_dqrr(struct qm_dqrr_entry *dst,
 	*d64 = *s64;
 #if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 	{
-		u32 res, zero = 0;
+		u64 res, zero = 0;
 		/* Create a dependancy after copying first bytes ensures no wrap
 		   transaction generated to QBMan */
 		/* Logical AND the value pointed to by s64 with 0x0 and
@@ -1205,7 +1247,9 @@ static inline void safe_copy_dqrr(struct qm_dqrr_entry *dst,
  * sole API that could be invoking the callback through this function).
  */
 static inline unsigned int __poll_portal_fast(struct qman_portal *p,
-					unsigned int poll_limit)
+					      unsigned int poll_limit,
+					      bool sched_napi,
+					      struct qman_poll_ctx *ctx)
 {
 	const struct qm_dqrr_entry *dq;
 	struct qman_fq *fq;
@@ -1248,7 +1292,7 @@ loop:
 		/* this is duplicated from the SDQCR code, but we have stuff to
 		 * do before *and* after this callback, and we don't want
 		 * multiple if()s in the critical path (SDQCR). */
-		res = fq->cb.dqrr(p, fq, dq);
+		res = fq->cb.dqrr(p, fq, dq, sched_napi, ctx);
 		if (res == qman_cb_dqrr_stop)
 			goto done;
 		/* Check for VDQCR completion */
@@ -1261,14 +1305,22 @@ loop:
 #else
 		fq = (void *)(uintptr_t)dq->contextB;
 #endif
+		if (!fq) {
+			pr_err("QMan: no fq for dq->verb=0x%x, dq->stat=0x%x, dq->contextB=0x%x\n",
+				dq->verb, dq->stat, dq->contextB);
+			res = qman_cb_dqrr_consume;
+			goto skip;
+		}
+
 		/* Now let the callback do its stuff */
-		res = fq->cb.dqrr(p, fq, dq);
+		res = fq->cb.dqrr(p, fq, dq, sched_napi, ctx);
 
 		/* The callback can request that we exit without consuming this
 		 * entry nor advancing; */
 		if (res == qman_cb_dqrr_stop)
 			goto done;
 	}
+skip:
 	/* Interpret 'dq' from a driver perspective. */
 	/* Parking isn't possible unless HELDACTIVE was set. NB,
 	 * FORCEELIGIBLE implies HELDACTIVE, so we only need to
@@ -1295,18 +1347,6 @@ loop:
 done:
 	return limit;
 }
-
-u32 qman_irqsource_get(void)
-{
-	/* "irqsource" and "poll" APIs mustn't redirect when sharing, they
-	 * should shut the user out if they are not the primary CPU hosting the
-	 * portal. That's why we use the "raw" interface. */
-	struct qman_portal *p = get_raw_affine_portal();
-	u32 ret = p->irq_sources & QM_PIRQ_VISIBLE;
-	put_affine_portal();
-	return ret;
-}
-EXPORT_SYMBOL(qman_irqsource_get);
 
 int qman_p_irqsource_add(struct qman_portal *p, u32 bits __maybe_unused)
 {
@@ -1391,16 +1431,8 @@ const cpumask_t *qman_affine_cpus(void)
 }
 EXPORT_SYMBOL(qman_affine_cpus);
 
-u16 qman_affine_channel(int cpu)
+u16 qman_affine_channel(unsigned int cpu)
 {
-	if (cpu < 0) {
-		struct qman_portal *portal = get_raw_affine_portal();
-#ifdef CONFIG_FSL_DPA_PORTAL_SHARE
-		BUG_ON(portal->sharing_redirect);
-#endif
-		cpu = portal->config->public_cfg.cpu;
-		put_affine_portal();
-	}
 	BUG_ON(!cpumask_test_cpu(cpu, &affine_mask));
 	return affine_channels[cpu];
 }
@@ -1412,32 +1444,100 @@ void *qman_get_affine_portal(int cpu)
 }
 EXPORT_SYMBOL(qman_get_affine_portal);
 
-int qman_p_poll_dqrr(struct qman_portal *p, unsigned int limit)
+#ifdef CONFIG_FSL_DPAA_ETHERCAT
+u16 qman_affine_channel_ethercat(int cpu)
 {
+	return ethercat_channel[cpu];
+}
+EXPORT_SYMBOL(qman_affine_channel_ethercat);
+
+void *qman_get_affine_portal_ethercat(int cpu)
+{
+	return &ethercat_portal[cpu];
+}
+EXPORT_SYMBOL(qman_get_affine_portal_ethercat);
+#endif
+
+/* Wrapper over napi_gro_receive(), which keeps track of NAPI structs different
+ * from the portal's active NAPI struct (the one polling). Every unscheduled
+ * NAPI on which we call napi_gro_receive() is added to a list which is
+ * manually flushed at the end of qman_p_poll_dqrr(), to avoid GRO stalls.
+ */
+void qman_portal_napi_gro_receive(struct qman_poll_ctx *ctx,
+				  struct napi_struct *napi,
+				  struct sk_buff *skb)
+{
+	struct napi_struct *iter;
+
+	napi_gro_receive(napi, skb);
+
+	if (napi == ctx->active_napi)
+		return;
+
+	list_for_each_entry(iter, &ctx->unscheduled_gro_napis, poll_list)
+		if (iter == napi)
+			return;
+
+	/* Reuse &napi->poll_list as the list item for chaining to our list.
+	 * This should be fine because the NAPI struct should not be on the
+	 * softnet_data &sd->poll_list at this time (it is by definition
+	 * unscheduled). Nonetheless, check that the NAPI struct is not on any
+	 * list, to be sure.
+	 */
+	WARN_ON_ONCE(!list_empty(&napi->poll_list));
+
+	list_add_tail(&napi->poll_list, &ctx->unscheduled_gro_napis);
+}
+EXPORT_SYMBOL(qman_portal_napi_gro_receive);
+
+/* A single software portal may have multiple NAPI structures polling on the
+ * same CPU - Ethernet and CAAM, multiple Ethernet interfaces, etc. The same
+ * NAPI structure that begins polling a portal runs to budget exhaustion, even
+ * if the DQRR contains FDs from FQs belonging to a different interface.
+ *
+ * The active NAPI structure could simply relinquish the portal to the
+ * rightful owner of the FD by returning qman_cb_dqrr_stop and letting QMan
+ * fire another hardirq and schedule the correct NAPI, but this hurts
+ * performance even in simple scenarios (TX conf of one interface can cause
+ * NAPI bouncing of another interface's RX).
+ *
+ * So we simply limit ourselves to mitigate the issues caused by this choice.
+ * Namely, it is mostly fine except for napi_gro_receive(), which can be
+ * executed on a NAPI struct which is unscheduled (not the NAPI actively
+ * polling). Because the NAPI core flushes the GRO list of the scheduled NAPI
+ * struct and we are potentially queuing skbs to the GRO lists of other
+ * unscheduled NAPI structs, the core doesn't know it has to flush them as
+ * well, so we have to flush them ourselves. Otherwise the GRO SKBs will remain
+ * unflushed for an indefinite amount of time (the active NAPI struct remains
+ * sticky to the portal for as long as a traffic burst exists).
+ */
+int qman_p_poll_dqrr(struct qman_portal *p, unsigned int limit,
+		     const struct napi_struct *active_napi)
+{
+	struct napi_struct *napi, *tmp;
+	struct qman_poll_ctx ctx;
 	int ret;
 
 #ifdef CONFIG_FSL_DPA_PORTAL_SHARE
 	if (unlikely(p->sharing_redirect))
-		ret = -EINVAL;
-	else
+		return -EINVAL;
 #endif
-	{
-		BUG_ON(p->irq_sources & QM_PIRQ_DQRI);
-		ret = __poll_portal_fast(p, limit);
+
+	BUG_ON(p->irq_sources & QM_PIRQ_DQRI);
+	ctx.active_napi = active_napi;
+	INIT_LIST_HEAD(&ctx.unscheduled_gro_napis);
+
+	ret = __poll_portal_fast(p, limit, false, &ctx);
+
+	list_for_each_entry_safe(napi, tmp, &ctx.unscheduled_gro_napis, poll_list) {
+		napi_gro_flush(napi, false);
+		gro_normal_list(&napi->gro);
+		list_del_init(&napi->poll_list);
 	}
+
 	return ret;
 }
 EXPORT_SYMBOL(qman_p_poll_dqrr);
-
-int qman_poll_dqrr(unsigned int limit)
-{
-	struct qman_portal *p = get_poll_portal();
-	int ret;
-	ret = qman_p_poll_dqrr(p, limit);
-	put_poll_portal();
-	return ret;
-}
-EXPORT_SYMBOL(qman_poll_dqrr);
 
 u32 qman_p_poll_slow(struct qman_portal *p)
 {
@@ -1455,47 +1555,6 @@ u32 qman_p_poll_slow(struct qman_portal *p)
 	return ret;
 }
 EXPORT_SYMBOL(qman_p_poll_slow);
-
-u32 qman_poll_slow(void)
-{
-	struct qman_portal *p = get_poll_portal();
-	u32 ret;
-	ret = qman_p_poll_slow(p);
-	put_poll_portal();
-	return ret;
-}
-EXPORT_SYMBOL(qman_poll_slow);
-
-/* Legacy wrapper */
-void qman_p_poll(struct qman_portal *p)
-{
-#ifdef CONFIG_FSL_DPA_PORTAL_SHARE
-	if (unlikely(p->sharing_redirect))
-		return;
-#endif
-	if ((~p->irq_sources) & QM_PIRQ_SLOW) {
-		if (!(p->slowpoll--)) {
-			u32 is = qm_isr_status_read(&p->p) & ~p->irq_sources;
-			u32 active = __poll_portal_slow(p, is);
-			if (active) {
-				qm_isr_status_clear(&p->p, active);
-				p->slowpoll = SLOW_POLL_BUSY;
-			} else
-				p->slowpoll = SLOW_POLL_IDLE;
-		}
-	}
-	if ((~p->irq_sources) & QM_PIRQ_DQRI)
-		__poll_portal_fast(p, CONFIG_FSL_QMAN_POLL_LIMIT);
-}
-EXPORT_SYMBOL(qman_p_poll);
-
-void qman_poll(void)
-{
-	struct qman_portal *p = get_poll_portal();
-	qman_p_poll(p);
-	put_poll_portal();
-}
-EXPORT_SYMBOL(qman_poll);
 
 void qman_p_stop_dequeues(struct qman_portal *p)
 {
@@ -1573,6 +1632,14 @@ u32 qman_p_static_dequeue_get(struct qman_portal *p)
 	return p->sdqcr;
 }
 EXPORT_SYMBOL(qman_p_static_dequeue_get);
+
+u32 qm_portal_get_sdqcr(struct qm_portal *p)
+{
+	struct qman_portal *portal = container_of(p, struct qman_portal, p);
+
+	return qman_p_static_dequeue_get(portal);
+}
+EXPORT_SYMBOL(qm_portal_get_sdqcr);
 
 u32 qman_static_dequeue_get(void)
 {
@@ -1714,12 +1781,12 @@ EXPORT_SYMBOL(qman_create_fq);
 
 void qman_destroy_fq(struct qman_fq *fq, u32 flags __maybe_unused)
 {
-
 	/* We don't need to lock the FQ as it is a pre-condition that the FQ be
 	 * quiesced. Instead, run some checks. */
 	switch (fq->state) {
 	case qman_fq_state_parked:
 		DPA_ASSERT(flags & QMAN_FQ_DESTROY_PARKED);
+		fallthrough;
 	case qman_fq_state_oos:
 		if (fq_isset(fq, QMAN_FQ_FLAG_DYNAMIC_FQID))
 			qman_release_fqid(fq->fqid);

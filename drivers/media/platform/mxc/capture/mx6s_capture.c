@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright (C) 2014-2016 Freescale Semiconductor, Inc. All Rights Reserved.
- * Copyright 2019 NXP
+ * Copyright 2019-2026 NXP
  */
 
 /*!
@@ -42,6 +42,7 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-dev.h>
 #include <media/v4l2-device.h>
+#include <media/v4l2-fh.h>
 #include <media/v4l2-ioctl.h>
 #include <media/videobuf2-core.h>
 #include <media/videobuf2-dma-contig.h>
@@ -344,7 +345,20 @@ struct mx6s_csi_dev {
 	struct mx6s_csi_mux csi_mux;
 };
 
+struct mx6s_fh {
+	struct v4l2_fh fh;
+	struct mx6s_csi_dev *csi_dev;
+};
+
 static const struct of_device_id mx6s_csi_dt_ids[];
+
+static inline struct mx6s_csi_dev *file_to_csidev(struct file *filp)
+{
+	struct v4l2_fh *vfh = file_to_v4l2_fh(filp);
+	struct mx6s_fh *fh = container_of(vfh, struct mx6s_fh, fh);
+
+	return fh->csi_dev;
+}
 
 static inline int csi_read(struct mx6s_csi_dev *csi, unsigned int offset)
 {
@@ -362,7 +376,7 @@ static inline struct mx6s_csi_dev
 	return container_of(n, struct mx6s_csi_dev, subdev_notifier);
 }
 
-struct mx6s_fmt *format_by_fourcc(int fourcc)
+static struct mx6s_fmt *format_by_fourcc(int fourcc)
 {
 	int i;
 
@@ -375,7 +389,7 @@ struct mx6s_fmt *format_by_fourcc(int fourcc)
 	return NULL;
 }
 
-struct mx6s_fmt *format_by_mbus(u32 code)
+static struct mx6s_fmt *format_by_mbus(u32 code)
 {
 	int i;
 
@@ -393,14 +407,14 @@ static struct mx6s_buffer *mx6s_ibuf_to_buf(struct mx6s_buf_internal *int_buf)
 	return container_of(int_buf, struct mx6s_buffer, internal);
 }
 
-void csi_clk_enable(struct mx6s_csi_dev *csi_dev)
+static void csi_clk_enable(struct mx6s_csi_dev *csi_dev)
 {
 	clk_prepare_enable(csi_dev->clk_disp_axi);
 	clk_prepare_enable(csi_dev->clk_disp_dcic);
 	clk_prepare_enable(csi_dev->clk_csi_mclk);
 }
 
-void csi_clk_disable(struct mx6s_csi_dev *csi_dev)
+static void csi_clk_disable(struct mx6s_csi_dev *csi_dev)
 {
 	clk_disable_unprepare(csi_dev->clk_csi_mclk);
 	clk_disable_unprepare(csi_dev->clk_disp_dcic);
@@ -1177,12 +1191,22 @@ static int mx6s_csi_open(struct file *file)
 	struct mx6s_csi_dev *csi_dev = video_drvdata(file);
 	struct v4l2_subdev *sd = csi_dev->sd;
 	struct vb2_queue *q = &csi_dev->vb2_vidq;
+	struct mx6s_fh *fh;
 	int ret = 0;
 
-	file->private_data = csi_dev;
+	fh = kzalloc(sizeof(*fh), GFP_KERNEL);
+	if (!fh)
+		return -ENOMEM;
 
-	if (mutex_lock_interruptible(&csi_dev->lock))
-		return -ERESTARTSYS;
+	v4l2_fh_init(&fh->fh, video_devdata(file));
+	fh->csi_dev = csi_dev;
+
+	if (mutex_lock_interruptible(&csi_dev->lock)) {
+		ret = -ERESTARTSYS;
+		goto err_free;
+	}
+
+	v4l2_fh_add(&fh->fh, file);
 
 	if (csi_dev->open_count++ == 0) {
 		q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -1196,7 +1220,7 @@ static int mx6s_csi_open(struct file *file)
 
 		ret = vb2_queue_init(q);
 		if (ret < 0)
-			goto unlock;
+			goto err_del_fh;
 
 		pm_runtime_get_sync(csi_dev->dev);
 
@@ -1209,8 +1233,15 @@ static int mx6s_csi_open(struct file *file)
 	mutex_unlock(&csi_dev->lock);
 
 	return ret;
-unlock:
+
+err_del_fh:
+	csi_dev->open_count--;
 	mutex_unlock(&csi_dev->lock);
+	v4l2_fh_del(&fh->fh, file);
+
+err_free:
+	v4l2_fh_exit(&fh->fh);
+	kfree(fh);
 	return ret;
 }
 
@@ -1218,6 +1249,8 @@ static int mx6s_csi_close(struct file *file)
 {
 	struct mx6s_csi_dev *csi_dev = video_drvdata(file);
 	struct v4l2_subdev *sd = csi_dev->sd;
+	struct v4l2_fh *vfh = file_to_v4l2_fh(file);
+	struct mx6s_fh *fh = container_of(vfh, struct mx6s_fh, fh);
 
 	mutex_lock(&csi_dev->lock);
 
@@ -1234,6 +1267,10 @@ static int mx6s_csi_close(struct file *file)
 		pm_runtime_put_sync_suspend(csi_dev->dev);
 	}
 	mutex_unlock(&csi_dev->lock);
+
+	v4l2_fh_del(&fh->fh, file);
+	v4l2_fh_exit(&fh->fh);
+	kfree(fh);
 
 	return 0;
 }
@@ -1321,9 +1358,9 @@ static int mx6s_vidioc_g_std(struct file *file, void *priv, v4l2_std_id *a)
 static int mx6s_vidioc_reqbufs(struct file *file, void *priv,
 			      struct v4l2_requestbuffers *p)
 {
-	struct mx6s_csi_dev *csi_dev = video_drvdata(file);
+	struct mx6s_csi_dev *csi_dev = file_to_csidev(file);
 
-	WARN_ON(priv != file->private_data);
+	WARN_ON(!csi_dev);
 
 	return vb2_reqbufs(&csi_dev->vb2_vidq, p);
 }
@@ -1331,10 +1368,10 @@ static int mx6s_vidioc_reqbufs(struct file *file, void *priv,
 static int mx6s_vidioc_querybuf(struct file *file, void *priv,
 			       struct v4l2_buffer *p)
 {
-	struct mx6s_csi_dev *csi_dev = video_drvdata(file);
+	struct mx6s_csi_dev *csi_dev = file_to_csidev(file);
 	int ret;
 
-	WARN_ON(priv != file->private_data);
+	WARN_ON(!csi_dev);
 
 	ret = vb2_querybuf(&csi_dev->vb2_vidq, p);
 
@@ -1350,9 +1387,9 @@ static int mx6s_vidioc_querybuf(struct file *file, void *priv,
 static int mx6s_vidioc_qbuf(struct file *file, void *priv,
 			   struct v4l2_buffer *p)
 {
-	struct mx6s_csi_dev *csi_dev = video_drvdata(file);
+	struct mx6s_csi_dev *csi_dev = file_to_csidev(file);
 
-	WARN_ON(priv != file->private_data);
+	WARN_ON(!csi_dev);
 
 	return vb2_qbuf(&csi_dev->vb2_vidq, NULL, p);
 }
@@ -1360,9 +1397,9 @@ static int mx6s_vidioc_qbuf(struct file *file, void *priv,
 static int mx6s_vidioc_dqbuf(struct file *file, void *priv,
 			    struct v4l2_buffer *p)
 {
-	struct mx6s_csi_dev *csi_dev = video_drvdata(file);
+	struct mx6s_csi_dev *csi_dev = file_to_csidev(file);
 
-	WARN_ON(priv != file->private_data);
+	WARN_ON(!csi_dev);
 
 	return vb2_dqbuf(&csi_dev->vb2_vidq, p, file->f_flags & O_NONBLOCK);
 }
@@ -1370,7 +1407,7 @@ static int mx6s_vidioc_dqbuf(struct file *file, void *priv,
 static int mx6s_vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
 				       struct v4l2_fmtdesc *f)
 {
-	struct mx6s_csi_dev *csi_dev = video_drvdata(file);
+	struct mx6s_csi_dev *csi_dev = file_to_csidev(file);
 	struct v4l2_subdev *sd = csi_dev->sd;
 	struct v4l2_subdev_mbus_code_enum code = {
 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
@@ -1379,7 +1416,7 @@ static int mx6s_vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
 	struct mx6s_fmt *fmt;
 	int ret;
 
-	WARN_ON(priv != file->private_data);
+	WARN_ON(!csi_dev);
 
 	ret = v4l2_subdev_call(sd, pad, enum_mbus_code, NULL, &code);
 	if (ret < 0) {
@@ -1394,7 +1431,7 @@ static int mx6s_vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
 		return -EINVAL;
 	}
 
-	strlcpy(f->description, fmt->name, sizeof(f->description));
+	strscpy(f->description, fmt->name, sizeof(f->description));
 	f->pixelformat = fmt->pixelformat;
 
 	return 0;
@@ -1457,6 +1494,9 @@ static int mx6s_vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 		return ret;
 
 	csi_dev->fmt           = format_by_fourcc(f->fmt.pix.pixelformat);
+	if (!csi_dev->fmt)
+		return -EINVAL;
+
 	csi_dev->mbus_code     = csi_dev->fmt->mbus_code;
 	csi_dev->pix.width     = f->fmt.pix.width;
 	csi_dev->pix.height    = f->fmt.pix.height;
@@ -1475,9 +1515,9 @@ static int mx6s_vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 static int mx6s_vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 				    struct v4l2_format *f)
 {
-	struct mx6s_csi_dev *csi_dev = video_drvdata(file);
+	struct mx6s_csi_dev *csi_dev = file_to_csidev(file);
 
-	WARN_ON(priv != file->private_data);
+	WARN_ON(!csi_dev);
 
 	f->fmt.pix = csi_dev->pix;
 
@@ -1487,13 +1527,13 @@ static int mx6s_vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 static int mx6s_vidioc_querycap(struct file *file, void  *priv,
 			       struct v4l2_capability *cap)
 {
-	struct mx6s_csi_dev *csi_dev = video_drvdata(file);
+	struct mx6s_csi_dev *csi_dev = file_to_csidev(file);
 
-	WARN_ON(priv != file->private_data);
+	WARN_ON(!csi_dev);
 
 	/* cap->name is set by the friendly caller:-> */
-	strlcpy(cap->driver, MX6S_CAM_DRV_NAME, sizeof(cap->driver));
-	strlcpy(cap->card, MX6S_CAM_DRIVER_DESCRIPTION, sizeof(cap->card));
+	strscpy(cap->driver, MX6S_CAM_DRV_NAME, sizeof(cap->driver));
+	strscpy(cap->card, MX6S_CAM_DRIVER_DESCRIPTION, sizeof(cap->card));
 	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
 		 dev_name(csi_dev->dev));
 
@@ -1520,7 +1560,7 @@ static int mx6s_vidioc_streamon(struct file *file, void *priv,
 	struct v4l2_subdev *sd = csi_dev->sd;
 	int ret;
 
-	WARN_ON(priv != file->private_data);
+	WARN_ON(!csi_dev);
 
 	if (i != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
@@ -1535,11 +1575,11 @@ static int mx6s_vidioc_streamon(struct file *file, void *priv,
 static int mx6s_vidioc_streamoff(struct file *file, void *priv,
 				enum v4l2_buf_type i)
 {
-	struct mx6s_csi_dev *csi_dev = video_drvdata(file);
+	struct mx6s_csi_dev *csi_dev = file_to_csidev(file);
 	struct v4l2_subdev *sd = csi_dev->sd;
 	int ret;
 
-	WARN_ON(priv != file->private_data);
+	WARN_ON(!csi_dev);
 
 	if (i != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
@@ -1707,7 +1747,7 @@ static const struct v4l2_ioctl_ops mx6s_csi_ioctl_ops = {
 
 static int subdev_notifier_bound(struct v4l2_async_notifier *notifier,
 			    struct v4l2_subdev *subdev,
-			    struct v4l2_async_subdev *asd)
+			    struct v4l2_async_connection *asd)
 {
 	struct mx6s_csi_dev *csi_dev = notifier_to_mx6s_dev(notifier);
 
@@ -1789,10 +1829,10 @@ static int mx6sx_register_subdevs(struct mx6s_csi_dev *csi_dev)
 {
 	struct device_node *parent = csi_dev->dev->of_node;
 	struct device_node *node, *port, *rem;
-	struct v4l2_async_subdev *asd;
+	struct v4l2_async_connection *asd;
 	int ret;
 
-	v4l2_async_nf_init(&csi_dev->subdev_notifier);
+	v4l2_async_nf_init(&csi_dev->subdev_notifier, &csi_dev->v4l2_dev);
 
 	/* Attach sensors linked to csi receivers */
 	for_each_available_child_of_node(parent, node) {
@@ -1816,15 +1856,14 @@ static int mx6sx_register_subdevs(struct mx6s_csi_dev *csi_dev)
 		asd = v4l2_async_nf_add_fwnode(
 					&csi_dev->subdev_notifier,
 					csi_dev->fwnode,
-					struct v4l2_async_subdev);
+					struct v4l2_async_connection);
 		of_node_put(rem);
 		break;
 	}
 
 	csi_dev->subdev_notifier.ops = &mx6s_capture_async_ops;
 
-	ret = v4l2_async_nf_register(&csi_dev->v4l2_dev,
-					&csi_dev->subdev_notifier);
+	ret = v4l2_async_nf_register(&csi_dev->subdev_notifier);
 	if (ret)
 		dev_err(csi_dev->dev,
 					"Error register async notifier regoster\n");
@@ -1964,20 +2003,19 @@ err_vdev:
 	return ret;
 }
 
-static int mx6s_csi_remove(struct platform_device *pdev)
+static void mx6s_csi_remove(struct platform_device *pdev)
 {
 	struct v4l2_device *v4l2_dev = dev_get_drvdata(&pdev->dev);
 	struct mx6s_csi_dev *csi_dev =
 				container_of(v4l2_dev, struct mx6s_csi_dev, v4l2_dev);
 
-	v4l2_async_nf_cleanup(&csi_dev->subdev_notifier);
 	v4l2_async_nf_unregister(&csi_dev->subdev_notifier);
+	v4l2_async_nf_cleanup(&csi_dev->subdev_notifier);
 
 	video_unregister_device(csi_dev->vdev);
 	v4l2_device_unregister(&csi_dev->v4l2_dev);
 
 	pm_runtime_disable(csi_dev->dev);
-	return 0;
 }
 
 static int mx6s_csi_runtime_suspend(struct device *dev)
@@ -2004,10 +2042,6 @@ static const struct mx6s_csi_soc mx6sl_soc = {
 	.rx_fifo_rst = false,
 	.baseaddr_switch = 0,
 };
-static const struct mx6s_csi_soc mx8mq_soc = {
-	.rx_fifo_rst = true,
-	.baseaddr_switch = 0x80030,
-};
 
 static const struct of_device_id mx6s_csi_dt_ids[] = {
 	{ .compatible = "fsl,imx6s-csi",
@@ -2015,9 +2049,6 @@ static const struct of_device_id mx6s_csi_dt_ids[] = {
 	},
 	{ .compatible = "fsl,imx6sl-csi",
 	  .data = &mx6sl_soc,
-	},
-	{ .compatible = "fsl,imx8mq-csi",
-	  .data = &mx8mq_soc,
 	},
 	{ /* sentinel */ }
 };

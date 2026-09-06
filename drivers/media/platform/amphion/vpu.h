@@ -12,6 +12,7 @@
 #include <linux/mailbox_client.h>
 #include <linux/mailbox_controller.h>
 #include <linux/kfifo.h>
+#include <linux/imx_memory_usage.h>
 
 #define VPU_TIMEOUT_WAKEUP	msecs_to_jiffies(200)
 #define VPU_TIMEOUT		msecs_to_jiffies(1000)
@@ -47,6 +48,8 @@ struct vpu_buffer {
 	u32 length;
 	u32 bytesused;
 	struct device *dev;
+	struct imx_mur_node *recorder;
+	const char *label;
 };
 
 struct vpu_func {
@@ -81,6 +84,8 @@ struct vpu_dev {
 	atomic_t ref_dec;
 
 	struct dentry *debugfs;
+
+	struct imx_mur_node *recorder;
 };
 
 struct vpu_format {
@@ -154,7 +159,6 @@ struct vpu_core {
 	struct vpu_mbox tx_type;
 	struct vpu_mbox tx_data;
 	struct vpu_mbox rx;
-	unsigned long cmd_seq;
 
 	wait_queue_head_t ack_wq;
 	struct completion cmp;
@@ -163,7 +167,6 @@ struct vpu_core {
 	struct delayed_work msg_delayed_work;
 	struct kfifo msg_fifo;
 	void *msg_buffer;
-	unsigned int msg_buffer_size;
 
 	struct vpu_dev *vpu;
 	void *iface;
@@ -224,6 +227,8 @@ struct vpu_inst_ops {
 	int (*get_debug_info)(struct vpu_inst *inst, char *str, u32 size, u32 i);
 	void (*wait_prepare)(struct vpu_inst *inst);
 	void (*wait_finish)(struct vpu_inst *inst);
+	void (*attach_frame_store)(struct vpu_inst *inst, struct vb2_buffer *vb);
+	void (*reset_frame_store)(struct vpu_inst *inst);
 };
 
 struct vpu_inst {
@@ -253,6 +258,8 @@ struct vpu_inst {
 
 	struct list_head cmd_q;
 	void *pending;
+	unsigned long cmd_seq;
+	atomic_long_t last_response_cmd;
 
 	struct vpu_inst_ops *ops;
 	const struct vpu_format *formats;
@@ -277,6 +284,8 @@ struct vpu_inst {
 	pid_t tgid;
 	struct dentry *debugfs;
 
+	struct imx_mur_node *recorder;
+
 	void *priv;
 };
 
@@ -295,7 +304,8 @@ enum {
 	VPU_BUF_STATE_DECODED,
 	VPU_BUF_STATE_READY,
 	VPU_BUF_STATE_SKIP,
-	VPU_BUF_STATE_ERROR
+	VPU_BUF_STATE_ERROR,
+	VPU_BUF_STATE_CHANGED
 };
 
 struct vpu_vb2_buffer {
@@ -304,7 +314,8 @@ struct vpu_vb2_buffer {
 	dma_addr_t chroma_u;
 	dma_addr_t chroma_v;
 	unsigned int state;
-	u32 tag;
+	u32 average_qp;
+	s32 fs_id;
 };
 
 void vpu_writel(struct vpu_dev *vpu, u32 reg, u32 val);
@@ -324,7 +335,7 @@ static inline const char *vpu_core_type_desc(enum vpu_core_type type)
 
 static inline struct vpu_inst *to_inst(struct file *filp)
 {
-	return container_of(filp->private_data, struct vpu_inst, fh);
+	return container_of(file_to_v4l2_fh(filp), struct vpu_inst, fh);
 }
 
 #define ctrl_to_inst(ctrl)	\

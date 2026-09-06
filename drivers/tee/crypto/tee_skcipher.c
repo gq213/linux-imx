@@ -21,6 +21,8 @@
 
 #include "tee_skcipher.h"
 
+#define TEE_CRYPT_INIT_MAX_BUF_SZ	SZ_4K
+
 static DEFINE_MUTEX(algs_lock);
 static unsigned int active_devs;
 static atomic_long_t key_counter;
@@ -101,7 +103,7 @@ static int skcipher_free_shm(struct tee_crypt_priv_data *tc_prv_ctx,
 	struct tee_ioctl_invoke_arg inv_arg;
 	struct tee_param param[4];
 
-	if (!tc_prv || !pa) {
+	if (!tc_prv_ctx || !pa) {
 		pr_err("%s: Invalid Input params.\n", __func__);
 		return -EINVAL;
 	}
@@ -158,8 +160,8 @@ static int skcipher_setkey(struct crypto_skcipher *skcipher,
 						  key_len);
 	if (IS_ERR(reg_shm_key)) {
 		pr_err("key buffer, tee-shm register failed.\n");
-		mutex_unlock(&tc_prv_lock);
-		return PTR_ERR(reg_shm_key);
+		ret = PTR_ERR(reg_shm_key);
+		goto exit;
 	}
 
 	inv_arg.func = xts_algo ? PTA_SET_XTS_KEY : PTA_SET_CBC_KEY;
@@ -182,6 +184,7 @@ static int skcipher_setkey(struct crypto_skcipher *skcipher,
 		ret = -EFAULT;
 	}
 
+exit:
 	mutex_unlock(&tc_prv_lock);
 
 	if (reg_shm_key)
@@ -290,6 +293,8 @@ static int aes_crypt(struct skcipher_request *req, u8 ta_cmd_id)
 	u32 out_len = req->cryptlen + pad_len;
 	u32 in_len = req->cryptlen + pad_len;
 	u32 iv_len = ctx->iv_size;
+	u32 skip_in_len = 0;
+	u32 pend_in_len = in_len;
 	u8 *out_buf = NULL;
 	u8 *in_buf = NULL;
 	u8 *iv_buf = NULL;
@@ -297,30 +302,37 @@ static int aes_crypt(struct skcipher_request *req, u8 ta_cmd_id)
 	u32 dst_nents;
 
 	src_nents = sg_nents_for_len(req->src, req->cryptlen);
-
+	dst_nents = sg_nents_for_len(req->dst, req->cryptlen);
 	mutex_lock(&tc_prv_lock);
 	tc_prv_ctx = tc_prv;
 
-	in_buf = tc_prv_ctx->shm_pool;
-	out_buf = in_buf + in_len;
-	iv_buf = out_buf + out_len;
+	do {
+		if (pend_in_len > TEE_CRYPT_INIT_MAX_BUF_SZ)
+			in_len = TEE_CRYPT_INIT_MAX_BUF_SZ;
 
-	memcpy(iv_buf, req->iv, iv_len);
+		out_len = in_len;
 
-	sg_copy_to_buffer(req->src, src_nents, in_buf, in_len);
+		in_buf = tc_prv_ctx->shm_pool;
+		out_buf = in_buf + in_len;
+		iv_buf = out_buf + out_len;
 
-	ret = tc_sk_crypt(ctx, tc_prv_ctx,
-			  out_len, in_len, iv_len,
-			  ta_cmd_id);
+		memcpy(iv_buf, req->iv, iv_len);
 
-	if (ret) {
-		pr_err("TEE-Crypt: SK-Cipher Ops Failed[0x%x].", ret);
-		goto out;
-	}
+		sg_copy_buffer(req->src, src_nents, in_buf, in_len, skip_in_len, true);
 
-	dst_nents = sg_nents_for_len(req->dst, req->cryptlen);
+		ret = tc_sk_crypt(ctx, tc_prv_ctx,
+				  out_len, in_len, iv_len,
+				  ta_cmd_id);
 
-	sg_copy_from_buffer(req->dst, dst_nents, out_buf, out_len);
+		if (ret) {
+			pr_err("TEE-Crypt: SK-Cipher Ops Failed[0x%x].", ret);
+			goto out;
+		}
+
+		sg_copy_buffer(req->dst, dst_nents, out_buf, out_len, skip_in_len, false);
+		pend_in_len = pend_in_len - in_len;
+		skip_in_len += in_len;
+	} while (pend_in_len);
 
 out:
 	mutex_unlock(&tc_prv_lock);
@@ -463,7 +475,7 @@ static void tee_crypt_skcipher_alg_init(struct tee_crypt_skcipher_alg *t_alg)
 	alg->exit = tee_crypt_cra_exit;
 }
 
-int tee_crypt_algapi_init(void)
+static int tee_crypt_algapi_init(void)
 {
 	int i = 0, ret = 0;
 	bool registered = false;
@@ -490,7 +502,7 @@ int tee_crypt_algapi_init(void)
 	return ret;
 }
 
-void tee_crypt_algapi_exit(void)
+static void tee_crypt_algapi_exit(void)
 {
 	int i;
 
@@ -536,61 +548,6 @@ static int optee_ctx_match(struct tee_ioctl_version_data *ver, const void *data)
 	return (ver->impl_id == TEE_IMPL_ID_OPTEE);
 }
 
-static int tee_crypt_open_session(struct tee_crypt_priv_data *tc_prv_ctx)
-{
-	int ret;
-	struct tee_ioctl_open_session_arg sess_arg = { };
-
-	if (!tc_prv)
-		return -EFAULT;
-
-	tc_prv_ctx->ctx = tee_client_open_context(NULL, optee_ctx_match, NULL,
-						  NULL);
-	if (IS_ERR(tc_prv->ctx))
-		return -ENODEV;
-
-	memcpy(sess_arg.uuid, tc_prv_ctx->uuid.b, TEE_IOCTL_UUID_LEN);
-	sess_arg.clnt_login = TEE_IOCTL_LOGIN_REE_KERNEL;
-	sess_arg.num_params = 0;
-
-	ret = tee_client_open_session(tc_prv_ctx->ctx, &sess_arg, NULL);
-	if ((ret < 0) || (sess_arg.ret != 0)) {
-		pr_err("tee_client_open_session failed, err: %x\n",
-		       sess_arg.ret);
-		ret = -EINVAL;
-		goto out_ctx;
-	}
-	tc_prv_ctx->session_id = sess_arg.session;
-
-	ret = skcipher_alloc_shm(tc_prv_ctx,
-				 AES_BLOCK_SIZE + 2 * SZ_4K,
-				 &tc_prv_ctx->shm_pool_paddr);
-	if (ret) {
-		ret = -ENOMEM;
-		goto out_ctx;
-	}
-	tc_prv->shm_pool = memremap(tc_prv_ctx->shm_pool_paddr,
-				    AES_BLOCK_SIZE + 2 * SZ_4K, MEMREMAP_WB);
-	if (!tc_prv_ctx->shm_pool) {
-		ret = -EINVAL;
-		goto out_ctx;
-	}
-
-	return 0;
-
-out_ctx:
-	if (tc_prv->shm_pool)
-		memunmap(tc_prv->shm_pool);
-	if (tc_prv->shm_pool_paddr)
-		skcipher_free_shm(tc_prv, tc_prv->shm_pool_paddr);
-	if (tc_prv->session_id)
-		tee_client_close_session(tc_prv->ctx, tc_prv->session_id);
-	if (tc_prv->ctx)
-		tee_client_close_context(tc_prv->ctx);
-
-	return ret;
-}
-
 static int tee_crypt_close_session(struct tee_crypt_priv_data *tc_prv_ctx)
 {
 	if (!tc_prv_ctx)
@@ -607,6 +564,54 @@ static int tee_crypt_close_session(struct tee_crypt_priv_data *tc_prv_ctx)
 		tee_client_close_context(tc_prv_ctx->ctx);
 
 	return 0;
+}
+
+static int tee_crypt_open_session(struct tee_crypt_priv_data *tc_prv_ctx)
+{
+	int ret;
+	struct tee_ioctl_open_session_arg sess_arg = { };
+
+	if (!tc_prv_ctx)
+		return -EFAULT;
+
+	tc_prv_ctx->ctx = tee_client_open_context(NULL, optee_ctx_match, NULL,
+						  NULL);
+	if (IS_ERR(tc_prv_ctx->ctx))
+		return -ENODEV;
+
+	memcpy(sess_arg.uuid, tc_prv_ctx->uuid.b, TEE_IOCTL_UUID_LEN);
+	sess_arg.clnt_login = TEE_IOCTL_LOGIN_REE_KERNEL;
+	sess_arg.num_params = 0;
+
+	ret = tee_client_open_session(tc_prv_ctx->ctx, &sess_arg, NULL);
+	if ((ret < 0) || (sess_arg.ret != 0)) {
+		pr_err("tee_client_open_session failed, err: %x\n",
+		       sess_arg.ret);
+		goto out_ctx;
+	}
+	tc_prv_ctx->session_id = sess_arg.session;
+
+	ret = skcipher_alloc_shm(tc_prv_ctx,
+				 AES_BLOCK_SIZE + 2 * TEE_CRYPT_INIT_MAX_BUF_SZ,
+				 &tc_prv_ctx->shm_pool_paddr);
+	if (ret) {
+		ret = -ENOMEM;
+		goto out_ctx;
+	}
+	tc_prv_ctx->shm_pool = memremap(tc_prv_ctx->shm_pool_paddr,
+				        AES_BLOCK_SIZE + 2 * TEE_CRYPT_INIT_MAX_BUF_SZ,
+				        MEMREMAP_WB);
+	if (!tc_prv_ctx->shm_pool) {
+		ret = -EINVAL;
+		goto out_ctx;
+	}
+
+	return 0;
+
+out_ctx:
+	tee_crypt_close_session(tc_prv_ctx);
+
+	return ret;
 }
 
 #define VERSION "1.0"

@@ -9,7 +9,6 @@
 #include <linux/i2c-mux.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/regmap.h>
 
 #include <linux/mfd/maxim_serdes.h>
@@ -102,7 +101,7 @@ static int max96752_i2c_init(struct max96752_i2c *max96752_i2c)
 
 	max96752_i2c->gate->priv = max96752_i2c;
 
-	ret = i2c_mux_add_adapter(max96752_i2c->gate, 0, 0, 0);
+	ret = i2c_mux_add_adapter(max96752_i2c->gate, 0, 0);
 	if (ret < 0)
 		goto error;
 
@@ -128,8 +127,9 @@ static void late_probe_cb(void *data)
 	max96752->link_setup_finished = true;
 }
 
-static int max96752_i2c_probe(struct i2c_client *i2c, const struct i2c_device_id *id)
+static int max96752_i2c_probe(struct i2c_client *i2c)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(i2c);
 	struct max96752_i2c *max96752_i2c;
 	int ret;
 	const void *of_data;

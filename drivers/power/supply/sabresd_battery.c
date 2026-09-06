@@ -155,7 +155,7 @@ static battery_capacity dischargingTable[] = {
 	{3020,	0},
 };
 
-u32 calibrate_battery_capability_percent(struct max8903_data *data)
+static u32 calibrate_battery_capability_percent(struct max8903_data *data)
 {
 	u8 i;
 	pbattery_capacity pTable;
@@ -224,7 +224,7 @@ static void max8903_charger_update_status(struct max8903_data *data)
 	}
 }
 
-u32 calibration_voltage(struct max8903_data *data)
+static u32 calibration_voltage(struct max8903_data *data)
 {
 	u32 voltage_data = 0;
 	int adc_val = 0;
@@ -765,7 +765,6 @@ static int max8903_probe(struct platform_device *pdev)
 	data->ta_in = ta_in;
 	data->usb_in = usb_in;
 
-	psy_cfg.of_node = dev->of_node;
 	psy_cfg.drv_data = data;
 
 	data->psy = power_supply_register(dev, &max8903_ac_desc, &psy_cfg);
@@ -883,7 +882,7 @@ err:
 	return ret;
 }
 
-static int max8903_remove(struct platform_device *pdev)
+static void max8903_remove(struct platform_device *pdev)
 {
 	struct max8903_data *data = platform_get_drvdata(pdev);
 	if (data) {
@@ -919,8 +918,6 @@ static int max8903_remove(struct platform_device *pdev)
 		platform_set_drvdata(pdev, NULL);
 		kfree(data);
 	}
-
-	return 0;
 }
 
 static int max8903_suspend(struct platform_device *pdev,
@@ -940,7 +937,7 @@ static int max8903_suspend(struct platform_device *pdev,
 				irq = gpio_to_irq(pdata->uok);
 				enable_irq_wake(irq);
 			}
-			cancel_delayed_work(&data->work);
+			cancel_delayed_work_sync(&data->work);
 		}
 	}
 	return 0;

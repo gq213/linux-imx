@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2010-2015 Freescale Semiconductor, Inc.
- * Copyright 2019 NXP
+ * Copyright 2019-2025 NXP
  */
 /*
  * Based on STMP378X PxP driver
@@ -111,7 +111,7 @@ static unsigned int v4l2_fmt_to_pxp_fmt(u32 v4l2_pix_fmt)
 
 	return pxp_fmt;
 }
-struct v4l2_queryctrl pxp_controls[] = {
+struct v4l2_query_ext_ctrl pxp_controls[] = {
 	{
 		.id 		= V4L2_CID_HFLIP,
 		.type 		= V4L2_CTRL_TYPE_BOOLEAN,
@@ -168,6 +168,11 @@ struct v4l2_queryctrl pxp_controls[] = {
 		.type		= V4L2_CTRL_TYPE_BOOLEAN,
 	},
 };
+
+static inline struct pxps *file_to_pxps(struct file *filp)
+{
+	return container_of(file_to_v4l2_fh(filp), struct pxps, fh);
+}
 
 static void free_dma_buf(struct pxps *pxp, struct dma_mem *buf)
 {
@@ -310,7 +315,6 @@ static int pxp_set_fbinfo(struct pxps *pxp)
 static int _get_cur_fb_blank(struct pxps *pxp)
 {
 	struct fb_info *fbi;
-	mm_segment_t old_fs;
 	int err = 0;
 
 	err = _get_fbinfo(&fbi);
@@ -318,11 +322,8 @@ static int _get_cur_fb_blank(struct pxps *pxp)
 		return err;
 
 	if (fbi->fbops->fb_ioctl) {
-		old_fs = get_fs();
-		set_fs(KERNEL_DS);
 		err = fbi->fbops->fb_ioctl(fbi, MXCFB_GET_FB_BLANK,
 				(unsigned int)(&pxp->fb_blank));
-		set_fs(old_fs);
 	}
 
 	return err;
@@ -362,7 +363,7 @@ static int set_fb_blank(int blank)
 	return err;
 }
 
-static int pxp_set_cstate(struct pxps *pxp, struct v4l2_control *vc)
+static int pxp_set_cstate(struct pxps *pxp, struct v4l2_ext_control *vc)
 {
 
 	if (vc->id == V4L2_CID_HFLIP) {
@@ -384,7 +385,7 @@ static int pxp_set_cstate(struct pxps *pxp, struct v4l2_control *vc)
 	return 0;
 }
 
-static int pxp_get_cstate(struct pxps *pxp, struct v4l2_control *vc)
+static int pxp_get_cstate(struct pxps *pxp, struct v4l2_ext_control *vc)
 {
 	if (vc->id == V4L2_CID_HFLIP)
 		vc->value = pxp->pxp_conf.proc_data.hflip;
@@ -405,7 +406,7 @@ static int pxp_get_cstate(struct pxps *pxp, struct v4l2_control *vc)
 static int pxp_enumoutput(struct file *file, void *fh,
 			struct v4l2_output *o)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	if (o->index > 1)
 		return -EINVAL;
@@ -428,7 +429,7 @@ static int pxp_enumoutput(struct file *file, void *fh,
 static int pxp_g_output(struct file *file, void *fh,
 			unsigned int *i)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	*i = pxp->output;
 
@@ -438,7 +439,7 @@ static int pxp_g_output(struct file *file, void *fh,
 static int pxp_s_output(struct file *file, void *fh,
 			unsigned int i)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 	struct v4l2_pix_format *fmt = (struct v4l2_pix_format*)(&pxp->fb.fmt);
 	u32 size;
 	int ret, bpp;
@@ -496,7 +497,7 @@ static int pxp_g_fmt_video_output(struct file *file, void *fh,
 				struct v4l2_format *f)
 {
 	struct v4l2_pix_format *pf = &f->fmt.pix;
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 	struct pxp_data_format *fmt = pxp->s0_fmt;
 
 	pf->width = pxp->pxp_conf.s0_param.width;
@@ -553,7 +554,7 @@ static int pxp_try_fmt_video_output(struct file *file, void *fh,
 static int pxp_s_fmt_video_output(struct file *file, void *fh,
 				struct v4l2_format *f)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 	struct v4l2_pix_format *pf = &f->fmt.pix;
 	int ret;
 
@@ -564,6 +565,9 @@ static int pxp_s_fmt_video_output(struct file *file, void *fh,
 	ret = pxp_try_fmt_video_output(file, fh, f);
 	if (ret == 0) {
 		pxp->s0_fmt = pxp_get_format(f);
+		if (!pxp->s0_fmt)
+			return -EINVAL;
+
 		pxp->pxp_conf.s0_param.pixel_fmt =
 			v4l2_fmt_to_pxp_fmt(pxp->s0_fmt->fourcc);
 		pxp->pxp_conf.s0_param.width = pf->width;
@@ -577,7 +581,7 @@ static int pxp_s_fmt_video_output(struct file *file, void *fh,
 static int pxp_g_fmt_output_overlay(struct file *file, void *fh,
 				struct v4l2_format *f)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 	struct v4l2_window *wf = &f->fmt.win;
 
 	memset(wf, 0, sizeof(struct v4l2_window));
@@ -598,7 +602,7 @@ static int pxp_g_fmt_output_overlay(struct file *file, void *fh,
 static int pxp_try_fmt_output_overlay(struct file *file, void *fh,
 				struct v4l2_format *f)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 	struct v4l2_window *wf = &f->fmt.win;
 	struct v4l2_rect srect;
 	u32 s1_chromakey = wf->chromakey;
@@ -625,7 +629,7 @@ static int pxp_try_fmt_output_overlay(struct file *file, void *fh,
 static int pxp_s_fmt_output_overlay(struct file *file, void *fh,
 					struct v4l2_format *f)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 	struct v4l2_window *wf = &f->fmt.win;
 	int ret = pxp_try_fmt_output_overlay(file, fh, f);
 
@@ -648,7 +652,7 @@ static int pxp_s_fmt_output_overlay(struct file *file, void *fh,
 static int pxp_reqbufs(struct file *file, void *priv,
 			struct v4l2_requestbuffers *r)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	return videobuf_reqbufs(&pxp->s0_vbq, r);
 }
@@ -657,7 +661,7 @@ static int pxp_querybuf(struct file *file, void *priv,
 			struct v4l2_buffer *b)
 {
 	int ret;
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	ret = videobuf_querybuf(&pxp->s0_vbq, b);
 	if (!ret) {
@@ -672,7 +676,7 @@ static int pxp_querybuf(struct file *file, void *priv,
 static int pxp_qbuf(struct file *file, void *priv,
 			struct v4l2_buffer *b)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	return videobuf_qbuf(&pxp->s0_vbq, b);
 }
@@ -680,7 +684,7 @@ static int pxp_qbuf(struct file *file, void *priv,
 static int pxp_dqbuf(struct file *file, void *priv,
 			struct v4l2_buffer *b)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	return videobuf_dqbuf(&pxp->s0_vbq, b, file->f_flags & O_NONBLOCK);
 }
@@ -688,7 +692,7 @@ static int pxp_dqbuf(struct file *file, void *priv,
 static int pxp_streamon(struct file *file, void *priv,
 			enum v4l2_buf_type t)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 	int ret = 0;
 
 	if (t != V4L2_BUF_TYPE_VIDEO_OUTPUT)
@@ -708,7 +712,7 @@ static int pxp_streamon(struct file *file, void *priv,
 static int pxp_streamoff(struct file *file, void *priv,
 			enum v4l2_buf_type t)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 	int ret = 0;
 
 	if ((t != V4L2_BUF_TYPE_VIDEO_OUTPUT))
@@ -798,7 +802,7 @@ static int pxp_buf_prepare(struct videobuf_queue *q,
 		sg_init_table(sg, 3);
 
 		buf->txd = pchan->dma_chan.device->device_prep_slave_sg(
-			&pchan->dma_chan, sg, 3, DMA_FROM_DEVICE,
+			&pchan->dma_chan, sg, 3, DMA_DEV_TO_MEM,
 			DMA_PREP_INTERRUPT, NULL);
 		if (!buf->txd) {
 			ret = -EIO;
@@ -936,12 +940,12 @@ static struct videobuf_queue_ops pxp_vbq_ops = {
 static int pxp_querycap(struct file *file, void *fh,
 			struct v4l2_capability *cap)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	memset(cap, 0, sizeof(*cap));
 	strcpy(cap->driver, "pxp");
 	strcpy(cap->card, "pxp");
-	strlcpy(cap->bus_info, dev_name(&pxp->pdev->dev),
+	strscpy(cap->bus_info, dev_name(&pxp->pdev->dev),
 		sizeof(cap->bus_info));
 
 	cap->version = (PXP_DRIVER_MAJOR << 8) + PXP_DRIVER_MINOR;
@@ -956,7 +960,7 @@ static int pxp_querycap(struct file *file, void *fh,
 static int pxp_g_fbuf(struct file *file, void *priv,
 			struct v4l2_framebuffer *fb)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	memset(fb, 0, sizeof(*fb));
 
@@ -976,7 +980,7 @@ static int pxp_g_fbuf(struct file *file, void *priv,
 static int pxp_s_fbuf(struct file *file, void *priv,
 			const struct v4l2_framebuffer *fb)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	pxp->overlay_state =
 		(fb->flags & V4L2_FBUF_FLAG_OVERLAY) != 0;
@@ -994,7 +998,7 @@ static int pxp_s_fbuf(struct file *file, void *priv,
 static int pxp_g_selection(struct file *file, void *fh,
 			  struct v4l2_selection *s)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	if (s->type != V4L2_BUF_TYPE_VIDEO_OUTPUT_OVERLAY)
 		return -EINVAL;
@@ -1010,7 +1014,7 @@ static int pxp_g_selection(struct file *file, void *fh,
 static int pxp_s_selection(struct file *file, void *fh,
 			 struct v4l2_selection *s)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 	int l = s->r.left;
 	int t = s->r.top;
 	int w = s->r.width;
@@ -1048,46 +1052,50 @@ static int pxp_s_selection(struct file *file, void *fh,
 	return 0;
 }
 
-static int pxp_queryctrl(struct file *file, void *priv,
-			 struct v4l2_queryctrl *qc)
+static int pxp_query_ext_ctrl(struct file *file, void *priv,
+			 struct v4l2_query_ext_ctrl *qc)
 {
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(pxp_controls); i++)
 		if (qc->id && qc->id == pxp_controls[i].id) {
 			memcpy(qc, &(pxp_controls[i]), sizeof(*qc));
+			qc->nr_of_dims = 0;
+			qc->elems = 1;
+			qc->elem_size = 4;
+
 			return 0;
 		}
 
 	return -EINVAL;
 }
 
-static int pxp_g_ctrl(struct file *file, void *priv,
-			 struct v4l2_control *vc)
+static int pxp_g_ext_ctrl(struct file *file, void *priv,
+			 struct v4l2_ext_controls *vc)
 {
 	int i;
 
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	for (i = 0; i < ARRAY_SIZE(pxp_controls); i++)
-		if (vc->id == pxp_controls[i].id)
-			return pxp_get_cstate(pxp, vc);
+		if (vc->controls[0].id == pxp_controls[i].id)
+			return pxp_get_cstate(pxp, &vc->controls[0]);
 
 	return -EINVAL;
 }
 
-static int pxp_s_ctrl(struct file *file, void *priv,
-			 struct v4l2_control *vc)
+static int pxp_s_ext_ctrl(struct file *file, void *priv,
+			 struct v4l2_ext_controls *vc)
 {
 	int i;
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 
 	for (i = 0; i < ARRAY_SIZE(pxp_controls); i++)
-		if (vc->id == pxp_controls[i].id) {
-			if (vc->value < pxp_controls[i].minimum ||
-			    vc->value > pxp_controls[i].maximum)
+		if (vc->controls[0].id == pxp_controls[i].id) {
+			if (vc->controls[0].value < pxp_controls[i].minimum ||
+			    vc->controls[0].value > pxp_controls[i].maximum)
 				return -ERANGE;
-			return pxp_set_cstate(pxp, vc);
+			return pxp_set_cstate(pxp, &vc->controls[0]);
 		}
 
 	memset(pxp->outbuf.vaddr, 0x0, pxp->outbuf.size);
@@ -1095,7 +1103,7 @@ static int pxp_s_ctrl(struct file *file, void *priv,
 	return -EINVAL;
 }
 
-void pxp_release(struct video_device *vfd)
+static void pxp_release(struct video_device *vfd)
 {
 	struct pxps *pxp = video_get_drvdata(vfd);
 
@@ -1106,11 +1114,14 @@ void pxp_release(struct video_device *vfd)
 
 static int pxp_open(struct file *file)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = video_drvdata(file);
 	int ret = 0;
 
 	mutex_lock(&pxp->mutex);
 	pxp->users++;
+
+	v4l2_fh_init(&pxp->fh, video_devdata(file));
+	v4l2_fh_add(&pxp->fh, file);
 
 	if (pxp->users > 1) {
 		pxp->users--;
@@ -1144,7 +1155,7 @@ out:
 
 static int pxp_close(struct file *file)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = video_drvdata(file);
 
 	pxp_streamoff(file, NULL, V4L2_BUF_TYPE_VIDEO_OUTPUT);
 	videobuf_stop(&pxp->s0_vbq);
@@ -1158,6 +1169,8 @@ static int pxp_close(struct file *file)
 
 	mutex_lock(&pxp->mutex);
 	pxp->users--;
+	v4l2_fh_del(&pxp->fh, file);
+	v4l2_fh_exit(&pxp->fh);
 	mutex_unlock(&pxp->mutex);
 
 	return 0;
@@ -1165,7 +1178,7 @@ static int pxp_close(struct file *file)
 
 static int pxp_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	struct pxps *pxp = video_get_drvdata(video_devdata(file));
+	struct pxps *pxp = file_to_pxps(file);
 	int ret;
 
 	ret = videobuf_mmap_mapper(&pxp->s0_vbq, vma);
@@ -1211,9 +1224,9 @@ static const struct v4l2_ioctl_ops pxp_ioctl_ops = {
 	.vidioc_g_selection		= pxp_g_selection,
 	.vidioc_s_selection		= pxp_s_selection,
 
-	.vidioc_queryctrl		= pxp_queryctrl,
-	.vidioc_g_ctrl			= pxp_g_ctrl,
-	.vidioc_s_ctrl			= pxp_s_ctrl,
+	.vidioc_query_ext_ctrl		= pxp_query_ext_ctrl,
+	.vidioc_g_ext_ctrls		= pxp_g_ext_ctrl,
+	.vidioc_s_ext_ctrls		= pxp_s_ext_ctrl,
 };
 
 static const struct video_device pxp_template = {
@@ -1302,7 +1315,7 @@ freeirq:
 	return err;
 }
 
-static int pxp_remove(struct platform_device *pdev)
+static void pxp_remove(struct platform_device *pdev)
 {
 	struct pxps *pxp = platform_get_drvdata(pdev);
 	struct v4l2_device *v4l2_dev = pxp->vdev->v4l2_dev;
@@ -1315,8 +1328,6 @@ static int pxp_remove(struct platform_device *pdev)
 	free_dma_buf(pxp, &pxp->outbuf);
 
 	kfree(pxp);
-
-	return 0;
 }
 
 static struct platform_driver pxp_driver = {

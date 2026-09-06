@@ -13,6 +13,7 @@
 #include <linux/of_device.h>
 #include <linux/phy/phy.h>
 #include <linux/phy/phy-mixel-lvds-combo.h>
+#include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/regmap.h>
 
@@ -46,10 +47,9 @@
 struct imx8qxp_ldb;
 
 struct imx8qxp_ldb_channel {
-	struct ldb_channel base;
+	struct ldb_channel *base;
 	struct imx8qxp_ldb *imx8qxp_ldb;
 
-	struct drm_connector connector;
 	struct drm_encoder encoder;
 
 	struct phy *phy;
@@ -58,12 +58,6 @@ struct imx8qxp_ldb_channel {
 
 	u32 bus_flags;
 };
-
-static inline struct imx8qxp_ldb_channel *
-con_to_imx8qxp_ldb_ch(struct drm_connector *c)
-{
-	return container_of(c, struct imx8qxp_ldb_channel, connector);
-}
 
 static inline struct imx8qxp_ldb_channel *
 enc_to_imx8qxp_ldb_ch(struct drm_encoder *e)
@@ -95,7 +89,7 @@ imx8qxp_ldb_ch_set_bus_format(struct imx8qxp_ldb_channel *imx8qxp_ldb_ch,
 {
 	struct imx8qxp_ldb *imx8qxp_ldb = imx8qxp_ldb_ch->imx8qxp_ldb;
 	struct ldb *ldb = &imx8qxp_ldb->base;
-	struct ldb_channel *ldb_ch = &imx8qxp_ldb_ch->base;
+	struct ldb_channel *ldb_ch = imx8qxp_ldb_ch->base;
 
 	switch (bus_format) {
 	case MEDIA_BUS_FMT_RGB666_1X7X3_SPWG:
@@ -131,15 +125,6 @@ imx8qxp_ldb_ch_set_bus_format(struct imx8qxp_ldb_channel *imx8qxp_ldb_ch,
 					 LDB_BIT_MAP_CH1_JEIDA;
 		break;
 	}
-}
-
-static struct drm_encoder *imx8qxp_ldb_connector_best_encoder(
-		struct drm_connector *connector)
-{
-	struct imx8qxp_ldb_channel *imx8qxp_ldb_ch =
-					con_to_imx8qxp_ldb_ch(connector);
-
-	return &imx8qxp_ldb_ch->encoder;
 }
 
 static void imx8qxp_ldb_pxlink_enable(struct imx8qxp_ldb *imx8qxp_ldb,
@@ -233,7 +218,7 @@ imx8qxp_ldb_encoder_atomic_mode_set(struct drm_encoder *encoder,
 	struct imx8qxp_ldb_channel *imx8qxp_ldb_ch =
 						enc_to_imx8qxp_ldb_ch(encoder);
 	struct imx8qxp_ldb *imx8qxp_ldb = imx8qxp_ldb_ch->imx8qxp_ldb;
-	struct ldb_channel *ldb_ch = &imx8qxp_ldb_ch->base;
+	struct ldb_channel *ldb_ch = imx8qxp_ldb_ch->base;
 	struct ldb *ldb = &imx8qxp_ldb->base;
 	struct drm_display_mode *mode = &crtc_state->adjusted_mode;
 	unsigned long di_clk = mode->clock * 1000;
@@ -392,7 +377,7 @@ imx8qxp_ldb_encoder_atomic_check(struct drm_encoder *encoder,
 	struct imx_crtc_state *imx_crtc_state = to_imx_crtc_state(crtc_state);
 	struct imx8qxp_ldb_channel *imx8qxp_ldb_ch =
 						enc_to_imx8qxp_ldb_ch(encoder);
-	struct ldb_channel *ldb_ch = &imx8qxp_ldb_ch->base;
+	struct ldb_channel *ldb_ch = imx8qxp_ldb_ch->base;
 	struct drm_display_info *di = &conn_state->connector->display_info;
 	u32 bus_format = ldb_ch->bus_format;
 
@@ -423,19 +408,6 @@ imx8qxp_ldb_encoder_atomic_check(struct drm_encoder *encoder,
 	return 0;
 }
 
-static const struct drm_connector_funcs imx8qxp_ldb_connector_funcs = {
-	.fill_modes = drm_helper_probe_single_connector_modes,
-	.destroy = imx_drm_connector_destroy,
-	.reset = drm_atomic_helper_connector_reset,
-	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
-	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
-};
-
-static const struct drm_connector_helper_funcs
-imx8qxp_ldb_connector_helper_funcs = {
-	.best_encoder = imx8qxp_ldb_connector_best_encoder,
-};
-
 static const struct drm_encoder_helper_funcs
 imx8qxp_ldb_encoder_helper_funcs = {
 	.atomic_mode_set = imx8qxp_ldb_encoder_atomic_mode_set,
@@ -445,7 +417,7 @@ imx8qxp_ldb_encoder_helper_funcs = {
 };
 
 static const struct of_device_id imx8qxp_ldb_dt_ids[] = {
-	{ .compatible = "fsl,imx8qxp-ldb", },
+	{ .compatible = "fsl,imx8qxp-ldb-nxp", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, imx8qxp_ldb_dt_ids);
@@ -589,7 +561,7 @@ imx8qxp_ldb_bind(struct device *dev, struct device *master, void *data)
 
 	for (i = 0; i < LDB_CH_NUM; i++) {
 		imx8qxp_ldb->channel[i].imx8qxp_ldb = imx8qxp_ldb;
-		ldb->channel[i] = &imx8qxp_ldb->channel[i].base;
+		ldb->channel[i] = imx8qxp_ldb->channel[i].base;
 	}
 
 	ret = imx_scu_get_handle(&imx8qxp_ldb->handle);
@@ -746,7 +718,7 @@ imx8qxp_ldb_bind(struct device *dev, struct device *master, void *data)
 		of_node_put(auxldb_np);
 
 	for (i = 0; i < LDB_CH_NUM; i++) {
-		ldb_ch = &imx8qxp_ldb->channel[i].base;
+		ldb_ch = imx8qxp_ldb->channel[i].base;
 
 		if (!ldb_ch->is_valid)
 			continue;
@@ -801,22 +773,31 @@ static const struct component_ops imx8qxp_ldb_ops = {
 
 static int imx8qxp_ldb_probe(struct platform_device *pdev)
 {
+	struct imx8qxp_ldb_channel *imx8qxp_ldb_ch;
 	struct device *dev = &pdev->dev;
 	struct imx8qxp_ldb *imx8qxp_ldb;
+	int i;
 
 	imx8qxp_ldb = devm_kzalloc(dev, sizeof(*imx8qxp_ldb), GFP_KERNEL);
 	if (!imx8qxp_ldb)
 		return -ENOMEM;
+
+	for (i = 0; i < LDB_CH_NUM; i++) {
+		imx8qxp_ldb_ch = &imx8qxp_ldb->channel[i];
+
+		imx8qxp_ldb_ch->base = devm_ldb_channel_alloc(dev);
+		if (IS_ERR(imx8qxp_ldb_ch->base))
+			return PTR_ERR(imx8qxp_ldb_ch->base);
+	}
 
 	dev_set_drvdata(dev, imx8qxp_ldb);
 
 	return component_add(dev, &imx8qxp_ldb_ops);
 }
 
-static int imx8qxp_ldb_remove(struct platform_device *pdev)
+static void imx8qxp_ldb_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &imx8qxp_ldb_ops);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

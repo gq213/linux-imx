@@ -74,23 +74,6 @@ extern int unsigned long iram_tlb_base_addr;
 /*
  * Bus frequency management by Linux
  */
-extern int init_mmdc_lpddr2_settings(struct platform_device *dev);
-extern int init_mmdc_lpddr2_settings_mx6q(struct platform_device *dev);
-extern int init_mmdc_ddr3_settings_imx6_up(struct platform_device *dev);
-extern int init_mmdc_ddr3_settings_imx6_smp(struct platform_device *dev);
-extern int init_ddrc_ddr_settings(struct platform_device *dev);
-extern int update_ddr_freq_imx_smp(int ddr_rate);
-extern int update_ddr_freq_imx6_up(int ddr_rate);
-extern int update_lpddr2_freq(int ddr_rate);
-extern int update_lpddr2_freq_smp(int ddr_rate);
-
-#ifdef CONFIG_OPTEE
-/*
- * Bus frequency management by OPTEE OS
- */
-extern int update_freq_optee(int ddr_rate);
-extern int init_freq_optee(struct platform_device *busfreq_pdev);
-#endif
 
 /**
  * @brief  Functions to init and update the busfreq function of
@@ -162,7 +145,7 @@ static bool check_m4_sleep(void)
 	return  true;
 }
 
-static bool busfreq_notified_low = false;
+static bool busfreq_notified_low;
 
 static int busfreq_notify(enum busfreq_event event)
 {

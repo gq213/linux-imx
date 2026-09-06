@@ -49,7 +49,7 @@
 	rpmsg_audio: rpmsg_audio {
 		compatible = "fsl,imx93-rpmsg-audio";
 		model = "wm8962-audio";
-		fsl,platform = "rpmsg-audio-channel";
+		fsl,rpmsg-channel-name = "rpmsg-audio-channel";
 		fsl,enable-lpa;
 		fsl,rpmsg-out;
 		fsl,rpmsg-in;
@@ -62,21 +62,26 @@
 			 <&clk IMX93_CLK_EDMA2_GATE>,
 			 <&clk IMX93_CLK_AUDIO_PLL>;
 		clock-names = "ipg", "mclk", "dma", "pll8k";
-		audio-codec = <&codec>;
+		audio-codec = <&wm8962>;
 		memory-region = <&audio_reserved>;
+		hp-det-gpios = <&pcal6524 4 GPIO_ACTIVE_HIGH>;
 		audio-routing =
-			"IN1R", "MICBIAS",
-			"IN1L", "MICBIAS";
-		fsl,lpa-widgets =
-			"HPOUTL", "HPOUTR", "Playback",
-			"Capture", "IN1L", "IN1R";
-		status = "okay";
+			"Headphone Jack", "HPOUTL",
+			"Headphone Jack", "HPOUTR",
+			"Ext Spk", "SPKOUTL",
+			"Ext Spk", "SPKOUTR",
+			"Main MIC", "MICBIAS",
+			"IN3R", "Main MIC",
+			"IN1R", "Main MIC";
+		ignore-suspend-widgets =
+			"Headphone Jack", "Playback",
+			"Capture", "Main MIC";
 	};
 
 	rpmsg_micfil: rpmsg_micfil {
 		compatible = "fsl,imx93-rpmsg-audio";
 		model = "micfil-audio";
-		fsl,platform = "rpmsg-micfil-channel";
+		fsl,rpmsg-channel-name = "rpmsg-micfil-channel";
 		fsl,enable-lpa;
 		fsl,rpmsg-in;
 		assigned-clocks = <&clk IMX93_CLK_PDM>;
@@ -97,7 +102,7 @@
 		#size-cells = <0>;
 		status = "okay";
 
-		codec: wm8962@1a {
+		wm8962: codec@1a {
 			compatible = "wlf,wm8962";
 			reg = <0x1a>;
 			DCVDD-supply = <&reg_audio_pwr>;
@@ -123,7 +128,7 @@
 			reg = <0x50>;
 			interrupt-parent = <&gpio3>;
 			interrupts = <26 IRQ_TYPE_LEVEL_LOW>;
-			status = "okay";
+			status = "disabled";
 
 			port {
 				typec1_dr_sw: endpoint {
@@ -148,6 +153,7 @@
 		lsm6dsm@6a {
 			compatible = "st,lsm6dso";
 			reg = <0x6a>;
+			status = "disabled";
 		};
 	};
 };

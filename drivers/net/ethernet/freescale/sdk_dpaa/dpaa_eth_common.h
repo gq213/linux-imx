@@ -147,8 +147,6 @@ dpa_get_stats64(struct net_device *net_dev,
 		struct rtnl_link_stats64 *stats);
 int dpa_ndo_init(struct net_device *net_dev);
 int dpa_set_features(struct net_device *dev, netdev_features_t features);
-netdev_features_t dpa_fix_features(struct net_device *dev,
-		netdev_features_t features);
 #ifdef CONFIG_FSL_DPAA_TS
 u64 dpa_get_timestamp_ns(const struct dpa_priv_s *priv,
 			enum port_type rx_tx, const void *data);
@@ -157,7 +155,7 @@ int dpa_get_ts(const struct dpa_priv_s *priv, enum port_type rx_tx,
 	struct skb_shared_hwtstamps *shhwtstamps, const void *data);
 #endif /* CONFIG_FSL_DPAA_TS */
 int dpa_ioctl(struct net_device *dev, struct ifreq *rq, int cmd);
-int __cold dpa_remove(struct platform_device *of_dev);
+void __cold dpa_remove(struct platform_device *of_dev);
 struct mac_device * __cold __must_check
 __attribute__((nonnull)) dpa_mac_probe(struct platform_device *_of_dev);
 int dpa_set_mac_address(struct net_device *net_dev, void *addr);
@@ -190,6 +188,7 @@ int dpa_get_channel(void);
 void dpa_release_channel(void);
 void dpaa_eth_add_channel(u16 channel);
 int dpaa_eth_cgr_init(struct dpa_priv_s *priv);
+void dpa_destroy_cgr(struct qman_cgr *cgr);
 void dpa_fq_setup(struct dpa_priv_s *priv, const struct dpa_fq_cbs_t *fq_cbs,
 		struct fm_port *tx_port);
 int dpa_fq_init(struct dpa_fq *dpa_fq, bool td_enable);
